@@ -37,7 +37,10 @@ jobs:
           echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
 
       - name: Build Debug APK
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: |
+            gradle assembleDebug --no-daemon --stacktrace \
+              -PversionName=${{ steps.bump.outputs.new_name }} \
+              -PversionCode=${{ steps.bump.outputs.new_code }}
 
       - name: Verify APK exists
         run: |

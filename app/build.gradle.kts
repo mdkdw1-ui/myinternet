@@ -8,8 +8,11 @@ plugins {
 val versionProps = Properties().apply {
     load(rootProject.file("version.properties").inputStream())
 }
-val appVersionName = versionProps.getProperty("VERSION_NAME", "0.001")
-val appVersionCode = versionProps.getProperty("VERSION_CODE", "1").toInt()
+// GitHub Actions의 -P 플래그 우선, 없으면 파일 값
+val appVersionName = project.findProperty("versionName")?.toString()
+    ?: versionProps.getProperty("VERSION_NAME", "0.001")
+val appVersionCode = project.findProperty("versionCode")?.toString()?.toIntOrNull()
+    ?: versionProps.getProperty("VERSION_CODE", "1").toInt()
 
 android {
     namespace = "com.mdkdw1.myinternet"
