@@ -16,9 +16,11 @@
 
     <application
         android:name=".MyApp"
+        android:name=".MyApp"
         android:label="MyInternet"
         android:allowBackup="false"
         android:theme="@style/Theme.AppCompat.Light">
+        <activity android:name=".CrashActivity" android:exported="false" />
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
