@@ -14,9 +14,10 @@
     <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
 
     <application
+        android:name=".MyApp"
         android:label="MyInternet"
         android:allowBackup="false"
-        android:theme="@android:style/Theme.Material.Light">
+        android:theme="@style/Theme.AppCompat.Light">
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

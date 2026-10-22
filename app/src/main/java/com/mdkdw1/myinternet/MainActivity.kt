@@ -83,6 +83,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashHandler.init(this)
         settings = SettingsManager(this)
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
@@ -135,6 +136,26 @@ class MainActivity : AppCompatActivity() {
 
         root.addView(title("업데이트"))
         root.addView(Button(this).apply { text = "업데이트 확인"; setOnClickListener { checkUpdate() } })
+
+        // 크래시 로그 배너
+        val crashText = CrashHandler.readCrash()
+        if (!crashText.isNullOrBlank()) {
+            root.addView(TextView(this).apply {
+                text = "⚠️ 이전 실행에서 크래시 발생 — 클릭하여 상세 보기"
+                setTextColor(0xFFFFFFFF.toInt())
+                setBackgroundColor(0xFFCC0000.toInt())
+                setPadding(16, 16, 16, 16)
+                textSize = 14f
+                setOnClickListener {
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("크래시 로그")
+                        .setMessage(crashText.take(4000))
+                        .setPositiveButton("닫기", null)
+                        .setNeutralButton("삭제") { _, _ -> CrashHandler.clearCrash(); toast("삭제됨. 재실행하세요") }
+                        .show()
+                }
+            })
+        }
 
         setContentView(scroll)
         ensureWfdPermission()
