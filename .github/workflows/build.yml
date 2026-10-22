@@ -25,14 +25,14 @@ jobs:
         with:
           gradle-version: 8.9
 
-      - name: Bump version (0.001)
+      - name: Bump version from latest tag
         id: bump
         run: |
-          source version.properties
-          NEW_NAME=$(python3 -c "print(f'{${VERSION_NAME} + 0.001:.3f}')")
-          NEW_CODE=$((VERSION_CODE + 1))
-          echo "VERSION_NAME=$NEW_NAME" > version.properties
-          echo "VERSION_CODE=$NEW_CODE" >> version.properties
+          git fetch --tags
+          LAST=$(git tag -l 'v*' | sort -V | tail -1 | sed 's/^v//')
+          LAST=${LAST:-0.000}
+          NEW_NAME=$(python3 -c "print(f'{${LAST} + 0.001:.3f}')")
+          NEW_CODE=$(( $(git rev-list --count HEAD) ))
           echo "new_name=$NEW_NAME" >> $GITHUB_OUTPUT
           echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
 
