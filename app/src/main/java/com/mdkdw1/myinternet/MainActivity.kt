@@ -177,12 +177,18 @@ class MainActivity : Activity() {
             text = "📡 이 폰을 서버로 (그룹 생성)"
             setOnClickListener {
                 if (isHotspotOn()) {
-                    toast("핫스팟이 켜져 있습니다. 끄고 시도하거나 핫스팟+QR을 사용하세요")
+                    AlertDialog.Builder(this@MainActivity)
+                        .setTitle("핫스팟 끄기 필요")
+                        .setMessage("Wi-Fi Direct와 핫스팟을 동시에 켜면 BUSY 오류가 납니다.\n\n설정에서 핫스팟을 끄고 다시 시도하세요.")
+                        .setPositiveButton("설정 열기") { _, _ ->
+                            startActivity(Intent(android.provider.Settings.ACTION_WIRELESS_SETTINGS))
+                        }
+                        .setNegativeButton("닫기", null).show()
                     wfdStatus.text = "⚠️ 핫스팟 ON → Wi-Fi Direct 불가"
                     return@setOnClickListener
                 }
                 if (!hasWfdPermission()) { ensureWfdPermission(); return@setOnClickListener }
-                wfdStatus.text = "⏳ 그룹 생성 중..."
+                wfdStatus.text = "⏳ 그룹 생성 중... (BUSY면 자동 재시도)"
                 wfd?.createGroup()
             }
         })
