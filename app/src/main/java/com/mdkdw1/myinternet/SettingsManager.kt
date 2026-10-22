@@ -7,6 +7,7 @@ class SettingsManager(context: Context) {
     private val prefs: SharedPreferences =
         context.getSharedPreferences("myinternet", Context.MODE_PRIVATE)
 
+    // 서버 모드 설정
     var port: Int
         get() = prefs.getInt("port", 1080)
         set(v) = prefs.edit().putInt("port", v).apply()
@@ -17,6 +18,7 @@ class SettingsManager(context: Context) {
         get() = prefs.getString("password", "myinternet") ?: "myinternet"
         set(v) = prefs.edit().putString("password", v).apply()
 
+    // 클라이언트 모드 설정
     var srvHost: String
         get() = prefs.getString("srvHost", "") ?: ""
         set(v) = prefs.edit().putString("srvHost", v).apply()
@@ -29,4 +31,9 @@ class SettingsManager(context: Context) {
     var srvPass: String
         get() = prefs.getString("srvPass", "myinternet") ?: "myinternet"
         set(v) = prefs.edit().putString("srvPass", v).apply()
+
+    // UI 모드 (server / client)
+    var lastMode: String
+        get() = prefs.getString("lastMode", "server") ?: "server"
+        set(v) = prefs.edit().putString("lastMode", v).apply()
 }
