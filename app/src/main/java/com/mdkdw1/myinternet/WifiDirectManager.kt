@@ -106,7 +106,13 @@ class WifiDirectManager(private val context: Context) {
                 }
             }
         } catch (_: Exception) {}
-        try { channel?.let { manager?.requestDeviceInfo(it) { info -> myMacAddress = info.deviceAddress } } } catch (_: Exception) {}
+        try { 
+            channel?.let { 
+                manager?.requestDeviceInfo(it) { info -> 
+                    myMacAddress = info?.deviceAddress 
+                } 
+            } 
+        } catch (_: Exception) {}
         return myMacAddress
     }
 
