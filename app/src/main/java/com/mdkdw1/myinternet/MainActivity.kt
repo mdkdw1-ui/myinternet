@@ -150,6 +150,14 @@ class MainActivity : AppCompatActivity() {
         p.addView(Button(this).apply {
             text = "📡 로컬 핫스팟 켜기"
             setOnClickListener {
+                // 권한 체크 (Android 13+)
+                if (Build.VERSION.SDK_INT >= 33 &&
+                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+                    ActivityCompat.requestPermissions(this@MainActivity, arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES), PERM_REQ)
+                    toast("주변 기기 권한을 허용한 후 다시 눌러주세요.")
+                    return@setOnClickListener
+                }
+                
                 localHotspot?.startHotspot(object : LocalHotspotManager.HotspotCallback {
                     override fun onHotspotStarted(ssid: String, password: String) {
                         hotspotInfoText.text = "SSID: $ssid\nPW: $password"
