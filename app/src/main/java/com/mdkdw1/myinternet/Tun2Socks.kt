@@ -167,7 +167,7 @@ class Tun2Socks(
                     val now = System.currentTimeMillis()
                     var bestKey: UdpKey? = null; var bestTime = 0L
                     for ((k, t) in udpNat) {
-                        val dstHost = ipStr(intToBytes(k.dstIp))
+                        val dstHost = ipStr(intToBytes(k.dstIp), 0)
                         if (dstHost == srcHost && k.dstPort == srcPort && t > bestTime) {
                             bestKey = k; bestTime = t
                         }
@@ -315,14 +315,14 @@ class Tun2Socks(
     }
 
     // ================= helpers =================
-    private fun checksum(b: ByteArray, off: Int, len: Int): Int {
+    internal fun checksum(b: ByteArray, off: Int, len: Int): Int {
         var sum = 0L; var i = off
         while (i < off + len - 1) { sum += ((b[i].toInt() and 0xFF) shl 8) or (b[i+1].toInt() and 0xFF); i += 2 }
         if (i < off + len) sum += (b[i].toInt() and 0xFF) shl 8
         while ((sum ushr 16) != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
         return (sum.inv() and 0xFFFF).toInt()
     }
-    private fun tcpChecksum(srcIp: Int, dstIp: Int, tcp: ByteArray, off: Int, len: Int): Int {
+    internal fun tcpChecksum(srcIp: Int, dstIp: Int, tcp: ByteArray, off: Int, len: Int): Int {
         var sum = 0L
         sum += (srcIp ushr 16) and 0xFFFF; sum += srcIp and 0xFFFF
         sum += (dstIp ushr 16) and 0xFFFF; sum += dstIp and 0xFFFF
@@ -333,16 +333,16 @@ class Tun2Socks(
         while ((sum ushr 16) != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
         return (sum.inv() and 0xFFFF).toInt()
     }
-    private fun readInt(b: ByteArray, off: Int): Int =
+    internal fun readInt(b: ByteArray, off: Int): Int =
         ((b[off].toInt() and 0xFF) shl 24) or ((b[off+1].toInt() and 0xFF) shl 16) or
         ((b[off+2].toInt() and 0xFF) shl 8) or (b[off+3].toInt() and 0xFF)
-    private fun writeInt(b: ByteArray, off: Int, v: Int) {
+    internal fun writeInt(b: ByteArray, off: Int, v: Int) {
         b[off] = (v ushr 24).toByte(); b[off+1] = (v ushr 16).toByte()
         b[off+2] = (v ushr 8).toByte(); b[off+3] = v.toByte()
     }
-    private fun intToBytes(v: Int) = byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
-    private fun ipStr(d: ByteArray, off: Int) = "${d[off].toInt() and 0xFF}.${d[off+1].toInt() and 0xFF}.${d[off+2].toInt() and 0xFF}.${d[off+3].toInt() and 0xFF}"
-    private fun ipStr6(d: ByteArray, off: Int) = try { InetAddress.getByAddress(d.copyOfRange(off, off+16)).hostAddress ?: "::" } catch (_: Exception) { "::" }
+    internal fun intToBytes(v: Int) = byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
+    internal fun ipStr(d: ByteArray, off: Int) = "${d[off].toInt() and 0xFF}.${d[off+1].toInt() and 0xFF}.${d[off+2].toInt() and 0xFF}.${d[off+3].toInt() and 0xFF}"
+    internal fun ipStr6(d: ByteArray, off: Int) = try { InetAddress.getByAddress(d.copyOfRange(off, off+16)).hostAddress ?: "::" } catch (_: Exception) { "::" }
 
     class TcpConn(val srcIp: Int, val dstIp: Int, val srcPort: Int, val dstPort: Int, var clientSeq: Int) {
         var ourSeq = 0; @Volatile var closed = false; var socket: Socket? = null
