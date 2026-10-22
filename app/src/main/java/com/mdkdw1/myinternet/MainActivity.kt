@@ -221,14 +221,14 @@ class MainActivity : AppCompatActivity() {
 
         p.addView(title("4️⃣ 서버 MAC 주소 (수동 연결용)"))
         val macText = TextView(this).apply {
-            text = wfd?.myMacAddress ?: "MAC 주소 로딩 중..."
+            text = wfd?.fetchMyMac() ?: "MAC 주소를 가져올 수 없습니다 (Wi-Fi Direct 오류)"
             typeface = Typeface.MONOSPACE; textSize = 14f; setPadding(0, 8, 0, 8)
         }
         p.addView(macText)
         // 3초마다 MAC 주소 갱신
         handler.postDelayed(object : Runnable {
             override fun run() {
-                val mac = wfd?.myMacAddress
+                val mac = wfd?.fetchMyMac()
                 if (mac != null && mac != macText.text) macText.text = mac
                 handler.postDelayed(this, 3000)
             }
@@ -345,7 +345,11 @@ class MainActivity : AppCompatActivity() {
         val pass = parts.getOrNull(3) ?: "myinternet"
         applyClientConfig(host, port, user, pass)
         toast("스캔 완료: $host:$port")
-        if (pendingVpnAfterScan) { pendingVpnAfterScan = false; requestVpn() }
+        
+        // 스캔 후 바로 VPN 연결
+        handler.postDelayed({
+            requestVpn()
+        }, 500)
     }
 
     private fun showPeerDialog(peers: List<WifiP2pDevice>) {

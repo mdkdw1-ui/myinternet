@@ -81,6 +81,36 @@ class WifiDirectManager(private val context: Context) {
         context.registerReceiver(receiver, filter)
     }
 
+    /** 기기 고유 MAC 주소 강제 조회 (우회 경로 포함) */
+    fun fetchMyMac(): String? {
+        // 1. 이미 Broadcast로 받은게 있으면 리턴
+        if (myMacAddress != null) return myMacAddress
+
+        // 2. 시스템 NetworkInterface에서 직접 조회 (p2p0 인터페이스)
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
+            for (intf in interfaces) {
+                if (intf.name.contains("p2p") || intf.name.contains("wlan")) {
+                    val mac = intf.hardwareAddress
+                    if (mac != null) {
+                        return mac.joinToString(":") { String.format("%02x", it) }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        // 3. 그래도 없으면 requestDeviceInfo 강제 호출
+        try {
+            channel?.let {
+                manager?.requestDeviceInfo(it) { info ->
+                    myMacAddress = info.deviceAddress
+                }
+            }
+        } catch (_: Exception) {}
+        
+        return myMacAddress
+    }
+
     /** 기기 검색 (BUSY/ERROR 방지: 기존 검색 중지 후 시작, 실패 시 채널 리셋 및 자동 재시도) */
     fun discoverPeers() {
         init()
