@@ -50,22 +50,36 @@ class WifiDirectManager(private val context: Context) {
             override fun onReceive(ctx: Context, intent: Intent) {
                 when (intent.action) {
                     WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
+                    
                     WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
-                        val device: WifiP2pDevice? = if (Build.VERSION.SDK_INT >= 33) {
-                            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE, WifiP2pDevice::class.java)
+                        // 89번 줄 에러 해결: 널 체크를 확실하게 수행
+                        val device: WifiP2pDevice?
+                        if (Build.VERSION.SDK_INT >= 33) {
+                            device = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE, WifiP2pDevice::class.java)
                         } else {
-                            @Suppress("DEPRECATION") intent.getParcelableExtra<WifiP2pDevice>(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
+                            @Suppress("DEPRECATION")
+                            device = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
                         }
-                        device?.deviceAddress?.let { myMacAddress = it }
+                        if (device != null) {
+                            myMacAddress = device.deviceAddress
+                        }
                     }
+                    
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                        val netInfo = if (Build.VERSION.SDK_INT >= 29)
-                            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
-                        else @Suppress("DEPRECATION") intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
+                        val netInfo: WifiP2pInfo?
+                        if (Build.VERSION.SDK_INT >= 29) {
+                            netInfo = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
+                        } else {
+                            @Suppress("DEPRECATION")
+                            netInfo = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
+                        }
+                        
                         if (netInfo?.groupFormed == true) {
                             groupOwnerIp = netInfo.groupOwnerAddress?.hostAddress
                             listener?.onConnected(groupOwnerIp)
-                        } else listener?.onDisconnected()
+                        } else {
+                            listener?.onDisconnected()
+                        }
                     }
                 }
             }
