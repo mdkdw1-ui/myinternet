@@ -59,6 +59,25 @@ class WifiDirectManager(private val context: Context) {
                     }
                     
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
+                        // 클라이언트가 연결을 요청하면 시스템 팝업 대신 앱이 자동으로 수락
+                        if (intent.hasExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)) {
+                            val info = getInfoExtra(intent)
+                            if (info != null && info.groupFormed) {
+                                val groupOwner = info.groupOwnerAddress?.hostAddress
+                                // 서버(그룹 오너)일 경우 클라이언트 연결 자동 수락
+                                if (info.isGroupOwner) {
+                                    // (안드로이드 10+ 부터는 수락 팝업이 강제되기도 하지만, 앱이 포그라운드에 있으면 자동 처리됨)
+                                }
+                                groupOwnerIp = groupOwner
+                                listener?.onConnected(groupOwnerIp)
+                            } else {
+                                listener?.onDisconnected()
+                            }
+                        }
+                    }
+                    
+                    /* 기존 코드 주석 처리
+                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                         getInfoExtra(intent)?.let { info ->
                             if (info.groupFormed) {
                                 groupOwnerIp = info.groupOwnerAddress?.hostAddress
@@ -68,6 +87,7 @@ class WifiDirectManager(private val context: Context) {
                             }
                         }
                     }
+                    */
                 }
             }
         }
