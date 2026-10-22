@@ -318,5 +318,24 @@ class MainActivity : Activity() {
         b < 1024L * 1024 * 1024 -> "%.1f MB".format(b / 1024.0 / 1024.0)
         else -> "%.2f GB".format(b / 1024.0 / 1024.0 / 1024.0)
     }
+
+    private fun hasWfdPermission(): Boolean {
+        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        return if (Build.VERSION.SDK_INT >= 33) {
+            val nearby = ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+            fine && nearby
+        } else fine
+    }
+
+    private fun ensureWfdPermission() {
+        val perms = mutableListOf<String>()
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
+            perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        if (perms.isNotEmpty()) ActivityCompat.requestPermissions(this, perms.toTypedArray(), PERM_REQ)
+    }
+
     override fun onDestroy() { super.onDestroy(); handler.removeCallbacks(refresh); wfd?.close(); wfd = null }
 }
