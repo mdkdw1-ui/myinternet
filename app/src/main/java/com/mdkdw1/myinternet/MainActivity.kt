@@ -21,12 +21,13 @@ import android.os.Looper
 import android.text.InputType
 import android.view.View
 import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
     private lateinit var settings: SettingsManager
     private lateinit var serverPanel: LinearLayout
     private lateinit var clientPanel: LinearLayout

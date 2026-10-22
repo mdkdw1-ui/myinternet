@@ -15,6 +15,7 @@ val appVersionCode = project.findProperty("versionCode")?.toString()?.toIntOrNul
     ?: versionProps.getProperty("VERSION_CODE", "1").toInt()
 
 dependencies {
+    implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.zxing:core:3.5.2")
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
     implementation("androidx.core:core-ktx:1.12.0")
