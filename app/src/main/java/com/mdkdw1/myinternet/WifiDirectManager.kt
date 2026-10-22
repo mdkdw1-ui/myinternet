@@ -158,20 +158,28 @@ class WifiDirectManager(private val context: Context) {
 
     fun connect(device: WifiP2pDevice) {
         val ch = channel ?: return
-        try { manager?.stopPeerDiscovery(ch, null) } catch (_: Exception) {}
+        
+        // ⚠️ stopPeerDiscovery()를 호출하지 마세요!
+        // 검색을 중지하면 내부 피어 목록이 지워져 connect()가 실패(reason 0)합니다.
+        
+        // 지연 후 연결 (경쟁 조건 방지)
         handler.postDelayed({
             val cfg = WifiP2pConfig().apply {
                 deviceAddress = device.deviceAddress
-                wps.setup = WpsInfo.DISPLAY
+                wps.setup = WpsInfo.PBC  // 삼성 기기는 PBC가 더 안정적일 수 있음
                 groupOwnerIntent = 0
             }
             try {
                 manager?.connect(ch, cfg, object : WifiP2pManager.ActionListener {
-                    override fun onSuccess() {}
-                    override fun onFailure(reason: Int) { listener?.onError("연결 실패: $reason") }
+                    override fun onSuccess() { 
+                        listener?.onError("연결 요청 성공. 서버 화면을 확인하세요") 
+                    }
+                    override fun onFailure(reason: Int) { 
+                        listener?.onError("연결 실패: $reason (다시 시도하세요)") 
+                    }
                 })
             } catch (_: SecurityException) { listener?.onError("위치 권한 필요") }
-        }, 500)
+        }, 1000)  // 1초 지연
     }
 
     fun createGroup() {
@@ -190,8 +198,17 @@ class WifiDirectManager(private val context: Context) {
         handler.postDelayed({
             try {
                 manager?.createGroup(ch, object : WifiP2pManager.ActionListener {
-                    override fun onSuccess() { listener?.onError("그룹 생성됨") }
-                    override fun onFailure(reason: Int) { listener?.onError("그룹 생성 실패: $reason") }
+                    override fun onSuccess() { 
+                        listener?.onError("그룹 생성 완료. 클라이언트 접속 대기 중...") 
+                    }
+                    override fun onFailure(reason: Int) { 
+                        if (reason == WifiP2pManager.BUSY) {
+                            listener?.onError("시스템 BUSY. 3초 후 자동 재시도...")
+                            handler.postDelayed({ doCreateGroup(ch) }, 3000)
+                        } else {
+                            listener?.onError("그룹 생성 실패: $reason") 
+                        }
+                    }
                 })
             } catch (_: SecurityException) { listener?.onError("권한 필요") }
         }, 500)
