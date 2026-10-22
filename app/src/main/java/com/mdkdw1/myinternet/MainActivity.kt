@@ -34,7 +34,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statsText: TextView
     private lateinit var toggleBtn: Button
     private lateinit var qrImage: ImageView
-    private lateinit var macText: TextView
+    private lateinit var wfdQrImage: ImageView
 
     private lateinit var vpnStatusText: TextView
     private lateinit var vpnInfoText: TextView
@@ -43,7 +43,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var userInput: EditText
     private lateinit var passInput: EditText
     private lateinit var wfdStatus: TextView
-    private lateinit var macInput: EditText
 
     private var wfd: WifiDirectManager? = null
     private val handler = Handler(Looper.getMainLooper())
@@ -140,6 +139,7 @@ class MainActivity : AppCompatActivity() {
     // ---------------- Server panel ----------------
     private fun buildServerPanel(): LinearLayout {
         val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        
         p.addView(title("1️⃣ 서버 시작"))
         toggleBtn = Button(this).apply {
             text = if (Socks5Service.isRunning) "■ 서버 중지" else "▶ 서버 시작"
@@ -152,50 +152,84 @@ class MainActivity : AppCompatActivity() {
         p.addView(statsText)
 
         p.addView(title("2️⃣ Wi-Fi Direct 그룹 생성 (핫스팟 아님)"))
-        p.addView(TextView(this).apply {
-            text = "NetShare처럼 Wi-Fi Direct로 가상 네트워크를 만듭니다."
-            textSize = 13f; setPadding(0, 0, 0, 8)
-        })
         p.addView(Button(this).apply {
             text = "📡 이 폰을 서버로 (그룹 생성)"
             setOnClickListener {
                 if (!hasWfdPermission()) { ensureWfdPermission(); return@setOnClickListener }
-                wfdStatus.text = "⏳ 그룹 생성 중... (클라이언트의 접속을 기다리세요)"
+                wfdStatus.text = "⏳ 그룹 생성 중..."
                 wfd?.createGroup()
             }
         })
         wfdStatus = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()); setPadding(0, 8, 0, 8) }
         p.addView(wfdStatus)
 
-        p.addView(title("3️⃣ 내 기기 MAC 주소 (수동 연결용)"))
-        macText = TextView(this).apply {
-            text = "로딩 중..."
-            typeface = Typeface.MONOSPACE; textSize = 14f; setPadding(0, 8, 0, 8)
+        p.addView(title("3️⃣ Wi-Fi Direct 연결용 QR (MAC 주소)"))
+        p.addView(TextView(this).apply {
+            text = "삼성 보안 정책상 MAC 주소가 02:00... 으로 보이면 QR이 생성되지 않습니다. 이 경우 일반 핫스팟+QR을 사용하세요."
+            textSize = 12f; setTextColor(0xFFCC6600.toInt()); setPadding(0, 0, 0, 8)
+        })
+        
+        wfdQrImage = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(500, 500)
+            setPadding(0, 8, 0, 8)
         }
-        p.addView(macText)
+        p.addView(wfdQrImage)
+        
         handler.postDelayed(object : Runnable {
             override fun run() {
                 val mac = wfd?.fetchMyMac()
-                if (mac != null && mac != macText.text) macText.text = mac
-                handler.postDelayed(this, 2000)
+                if (mac != null && !mac.startsWith("02:00:00")) {
+                    val bmp = QrHelper.generate("WFD:$mac")
+                    wfdQrImage.setImageBitmap(bmp)
+                }
+                handler.postDelayed(this, 3000)
             }
         }, 1000)
 
-        p.addView(title("4️⃣ 서버 IP"))
-        val ipText = TextView(this).apply {
-            text = localIps().joinToString("  ").ifEmpty { "IP 없음" }
-            typeface = Typeface.MONOSPACE; textSize = 14f; setPadding(0, 8, 0, 8)
+        p.addView(title("4️⃣ 일반 핫스팟용 QR (IP)"))
+        qrImage = ImageView(this).apply {
+            layoutParams = LinearLayout.LayoutParams(500, 500)
+            setPadding(0, 8, 0, 8)
         }
-        p.addView(ipText)
+        p.addView(qrImage)
+        refreshServerQr()
+        
+        p.addView(Button(this).apply {
+            text = "IP QR 갱신"
+            setOnClickListener { refreshServerQr() }
+        })
 
         return p
+    }
+
+    private fun refreshServerQr() {
+        val ip = localIps().firstOrNull { it.startsWith("192.168.43.") }
+            ?: localIps().firstOrNull { it.startsWith("192.168.") && !it.startsWith("192.168.49.") }
+            ?: localIps().firstOrNull()
+        if (ip == null) { qrImage.setImageDrawable(null); return }
+        val cfg = "$ip:${settings.port}:${settings.username}:${settings.password}"
+        qrImage.setImageBitmap(QrHelper.generate(cfg))
     }
 
     // ---------------- Client panel ----------------
     private fun buildClientPanel(): LinearLayout {
         val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        p.addView(title("📡 Wi-Fi Direct 연결 (핫스팟 없이)"))
+        p.addView(title("📷 QR 스캔으로 자동 연결"))
+        p.addView(Button(this).apply {
+            text = "📷 서버 QR 스캔 → 자동 연결"
+            setOnClickListener {
+                val opts = ScanOptions().apply {
+                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    setPrompt("서버 화면의 QR을 스캔하세요")
+                    setBeepEnabled(false)
+                    setOrientationLocked(false)
+                }
+                scanLauncher.launch(opts)
+            }
+        })
+
+        p.addView(title("📡 Wi-Fi Direct 수동 검색"))
         p.addView(Button(this).apply {
             text = "🔍 주변 서버 찾기"
             setOnClickListener {
@@ -207,32 +241,13 @@ class MainActivity : AppCompatActivity() {
         wfdStatus = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()); setPadding(0, 8, 0, 8) }
         p.addView(wfdStatus)
 
-        p.addView(title("🛠️ 수동 연결 (검색 실패 시)"))
-        macInput = EditText(this).apply { hint = "서버 MAC 주소 (예: aa:bb:cc:dd:ee:ff)" }
-        p.addView(macInput)
-        p.addView(Button(this).apply {
-            text = "MAC 주소로 강제 연결"
-            setOnClickListener {
-                val mac = macInput.text.toString().trim()
-                if (mac.matches(Regex("([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}"))) {
-                    val dev = WifiP2pDevice().apply {
-                        deviceAddress = mac
-                        deviceName = "Manual"
-                    }
-                    wfd?.connect(dev)
-                    toast("MAC 주소로 연결 시도...")
-                } else {
-                    toast("올바른 MAC 주소 형식이 아닙니다")
-                }
-            }
-        })
-
         p.addView(title("수동 설정 (VPN)"))
         hostInput = EditText(this).apply { hint = "서버 IP"; setText(settings.srvHost) }
         portInput = EditText(this).apply { hint = "포트"; setText(settings.srvPort.toString()); inputType = InputType.TYPE_CLASS_NUMBER }
         userInput = EditText(this).apply { hint = "사용자명"; setText(settings.srvUser) }
         passInput = EditText(this).apply { hint = "비밀번호"; setText(settings.srvPass); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
         listOf(hostInput, portInput, userInput, passInput).forEach { p.addView(it) }
+        
         p.addView(Button(this).apply {
             text = "VPN 연결"
             setOnClickListener {
@@ -248,15 +263,19 @@ class MainActivity : AppCompatActivity() {
         return p
     }
 
-    private fun showPeerDialog(peers: List<WifiP2pDevice>) {
-        val names = peers.map { "${it.deviceName} (${it.deviceAddress.takeLast(5)})" }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("서버 선택")
-            .setItems(names) { _, i -> wfd?.connect(peers[i]); toast("연결 중...") }
-            .setNegativeButton("취소", null).show()
-    }
-
     private fun handleScannedText(text: String) {
+        if (text.startsWith("WFD:")) {
+            val mac = text.removePrefix("WFD:")
+            val dev = WifiP2pDevice().apply {
+                deviceAddress = mac
+                deviceName = "QR_Server"
+            }
+            wfd?.connect(dev)
+            toast("Wi-Fi Direct 연결 시도 중...")
+            wfdStatus?.text = "⏳ QR로 연결 요청 중..."
+            return
+        }
+
         val parts = text.trim().split(":")
         if (parts.size < 2) { toast("QR 형식 오류"); return }
         val host = parts[0]
@@ -266,6 +285,14 @@ class MainActivity : AppCompatActivity() {
         applyClientConfig(host, port, user, pass)
         toast("스캔 완료! VPN 연결...")
         handler.postDelayed({ requestVpn() }, 500)
+    }
+
+    private fun showPeerDialog(peers: List<WifiP2pDevice>) {
+        val names = peers.map { "${it.deviceName} (${it.deviceAddress.takeLast(5)})" }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("서버 선택")
+            .setItems(names) { _, i -> wfd?.connect(peers[i]); toast("연결 중...") }
+            .setNegativeButton("취소", null).show()
     }
 
     private fun applyClientConfig(host: String, port: Int, user: String, pass: String) {
