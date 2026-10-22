@@ -51,12 +51,12 @@ class WifiDirectManager(private val context: Context) {
                 when (intent.action) {
                     WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
                     WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
-                        val device = if (Build.VERSION.SDK_INT >= 33) {
+                        val device: WifiP2pDevice? = if (Build.VERSION.SDK_INT >= 33) {
                             intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE, WifiP2pDevice::class.java)
                         } else {
-                            @Suppress("DEPRECATION") intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
+                            @Suppress("DEPRECATION") intent.getParcelableExtra<WifiP2pDevice>(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
                         }
-                        if (device != null) myMacAddress = device.deviceAddress
+                        device?.deviceAddress?.let { myMacAddress = it }
                     }
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                         val netInfo = if (Build.VERSION.SDK_INT >= 29)
