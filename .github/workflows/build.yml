@@ -56,6 +56,7 @@ jobs:
           path: app/build/outputs/apk/debug/*.apk
           retention-days: 90
 
+
       - name: Create Release & Upload APK
         uses: softprops/action-gh-release@v2
         with:
@@ -67,14 +68,6 @@ jobs:
           files: app/build/outputs/apk/debug/*.apk
           draft: false
           prerelease: false
-          fail_on_unmatched_files: true   # 파일 매칭 실패 시 워크플로우 실패
+          fail_on_unmatched_files: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Commit version bump [skip ci]
-        run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add version.properties
-          git commit -m "chore: bump version to ${{ steps.bump.outputs.new_name }} [skip ci]"
-          git push
