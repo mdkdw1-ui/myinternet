@@ -30,6 +30,8 @@ class WifiDirectManager(private val context: Context) {
     private var groupOwnerIp: String? = null
     private val handler = Handler(Looper.getMainLooper())
 
+    @Volatile var myMacAddress: String? = null
+
     fun setListener(l: Listener?) { listener = l }
     fun isSupported(): Boolean = manager != null
 
@@ -55,6 +57,14 @@ class WifiDirectManager(private val context: Context) {
                         if (state != WifiP2pManager.WIFI_P2P_STATE_ENABLED) listener?.onError("Wi-Fi Direct가 꺼져 있습니다")
                     }
                     WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
+                    WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
+                        val device = if (Build.VERSION.SDK_INT >= 33) {
+                            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE, WifiP2pDevice::class.java)
+                        } else {
+                            @Suppress("DEPRECATION") intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
+                        }
+                        if (device != null) myMacAddress = device.deviceAddress
+                    }
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
                         val netInfo = if (Build.VERSION.SDK_INT >= 29)
                             intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
@@ -71,19 +81,59 @@ class WifiDirectManager(private val context: Context) {
         context.registerReceiver(receiver, filter)
     }
 
-    /** 기기 검색 (BUSY 방지: 기존 검색 중지 후 시작) */
+    /** 기기 검색 (BUSY/ERROR 방지: 기존 검색 중지 후 시작, 실패 시 채널 리셋 및 자동 재시도) */
     fun discoverPeers() {
         init()
-        val ch = channel ?: return
+        val ch = channel ?: run { listener?.onError("Wi-Fi Direct 초기화 실패"); return }
+
+        val wm = context.getSystemService(Context.WIFI_SERVICE) as? android.net.wifi.WifiManager
+        if (wm == null || !wm.isWifiEnabled) {
+            listener?.onError("Wi-Fi가 꺼져 있습니다. Wi-Fi를 켜주세요")
+            return
+        }
+        if (Build.VERSION.SDK_INT >= 28) {
+            val lm = context.getSystemService(Context.LOCATION_SERVICE) as? android.location.LocationManager
+            val gps = lm?.isProviderEnabled(android.location.LocationManager.GPS_PROVIDER) ?: false
+            val net = lm?.isProviderEnabled(android.location.LocationManager.NETWORK_PROVIDER) ?: false
+            if (!gps && !net) {
+                listener?.onError("위치 서비스(GPS)가 꺼져 있습니다. 설정에서 켜주세요")
+                return
+            }
+        }
+
         try { manager?.stopPeerDiscovery(ch, null) } catch (_: Exception) {}
         handler.postDelayed({
             try {
                 manager?.discoverPeers(ch, object : WifiP2pManager.ActionListener {
-                    override fun onSuccess() {}
-                    override fun onFailure(reason: Int) { listener?.onError("검색 실패: $reason (잠시 후 재시도)") }
+                    override fun onSuccess() { listener?.onError("검색 시작됨. 주변 기기를 기다리세요") }
+                    override fun onFailure(reason: Int) {
+                        val msg = when (reason) {
+                            WifiP2pManager.BUSY -> "BUSY: 다른 작업 중. 2초 후 재시도"
+                            WifiP2pManager.ERROR -> "ERROR: Wi-Fi 초기화 중. 자동 재시도..."
+                            WifiP2pManager.P2P_UNSUPPORTED -> "이 기기는 Wi-Fi Direct 미지원"
+                            else -> "검색 실패: $reason"
+                        }
+                        listener?.onError(msg)
+                        
+                        // ERROR(0) 시 채널 리셋 후 재시도
+                        if (reason == WifiP2pManager.ERROR) {
+                            handler.postDelayed({
+                                try { channel?.close() } catch (_: Exception) {}
+                                channel = manager?.initialize(context, Looper.getMainLooper()) { }
+                                handler.postDelayed({
+                                    try {
+                                        manager?.discoverPeers(channel!!, object : WifiP2pManager.ActionListener {
+                                            override fun onSuccess() { listener?.onError("재시도 성공: 검색 시작됨") }
+                                            override fun onFailure(r: Int) { listener?.onError("재시도도 실패: $r") }
+                                        })
+                                    } catch (_: SecurityException) {}
+                                }, 1000)
+                            }, 2000)
+                        }
+                    }
                 })
-            } catch (_: SecurityException) { listener?.onError("위치 권한 필요") }
-        }, 300)
+            } catch (_: SecurityException) { listener?.onError("위치 권한 필요 (설정에서 허용)") }
+        }, 500)
     }
 
     private fun requestPeers() {
@@ -92,21 +142,18 @@ class WifiDirectManager(private val context: Context) {
         } catch (_: SecurityException) {}
     }
 
-    /** 클라이언트 → 서버 연결 (WPS PBC → DISPLAY 순차 시도로 속도/호환성 개선) */
     fun connect(device: WifiP2pDevice) {
         val ch = channel ?: return
         try { manager?.stopPeerDiscovery(ch, null) } catch (_: Exception) {}
         val cfg = WifiP2pConfig().apply {
             deviceAddress = device.deviceAddress
-            // PBC가 안 되면 DISPLAY로 재시도 (아래 onFailure)
             wps.setup = WpsInfo.PBC
-            groupOwnerIntent = 0 // 클라이언트가 그룹 오너가 되지 않도록 (서버가 오너)
+            groupOwnerIntent = 0
         }
         try {
             manager?.connect(ch, cfg, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() {}
                 override fun onFailure(reason: Int) {
-                    // PBC 실패 → DISPLAY로 재시도
                     cfg.wps.setup = WpsInfo.DISPLAY
                     try {
                         manager?.connect(ch, cfg, object : WifiP2pManager.ActionListener {
@@ -119,7 +166,6 @@ class WifiDirectManager(private val context: Context) {
         } catch (_: SecurityException) { listener?.onError("위치 권한 필요") }
     }
 
-    /** 서버 그룹 생성 (BUSY 해결: 검색/그룹 정리 후 재시도) */
     fun createGroup() {
         init()
         val ch = channel ?: return
@@ -139,7 +185,6 @@ class WifiDirectManager(private val context: Context) {
                     override fun onSuccess() { listener?.onError("그룹 생성됨. 클라이언트에서 검색하세요") }
                     override fun onFailure(reason: Int) {
                         if (reason == WifiP2pManager.BUSY) {
-                            // BUSY면 2초 후 한 번 더
                             handler.postDelayed({
                                 try {
                                     manager?.createGroup(ch, object : WifiP2pManager.ActionListener {
