@@ -230,8 +230,18 @@ class MainActivity : AppCompatActivity() {
         })
 
         p.addView(title("📡 Wi-Fi Direct 수동 검색"))
+        
+        // 삼성 기기 우회: 설정 화면을 열어 Wi-Fi Direct 서비스를 깨움
         p.addView(Button(this).apply {
-            text = "🔍 주변 서버 찾기"
+            text = "⚙️ 1. Wi-Fi 설정 열기 (필수 우회)"
+            setOnClickListener {
+                startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
+                toast("설정 화면이 열리면 뒤로 가기 후 '주변 서버 찾기'를 누르세요")
+            }
+        })
+        
+        p.addView(Button(this).apply {
+            text = "🔍 2. 주변 서버 찾기"
             setOnClickListener {
                 if (!hasWfdPermission()) { ensureWfdPermission(); return@setOnClickListener }
                 wfdStatus.text = "검색 중..."
