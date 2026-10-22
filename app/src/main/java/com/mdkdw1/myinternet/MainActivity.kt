@@ -333,7 +333,9 @@ class MainActivity : Activity() {
     private fun pickBestIp(): String? {
         val ips = localIps()
         // 우선순위: Wi-Fi Direct 그룹(192.168.49.x) > 핫스팟(192.168.x.x) > 기타 사설
-        return ips.firstOrNull { it.startsWith("192.168.49.") }
+        // Tailscale(100.x) 우선, 그다음 핫스팟/WFD
+        return ips.firstOrNull { it.startsWith("100.") }
+            ?: ips.firstOrNull { it.startsWith("192.168.49.") }
             ?: ips.firstOrNull { it.startsWith("192.168.") }
             ?: ips.firstOrNull { it.startsWith("10.") || it.startsWith("172.") }
             ?: ips.firstOrNull()
