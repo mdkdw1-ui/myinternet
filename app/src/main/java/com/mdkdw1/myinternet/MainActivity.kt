@@ -244,9 +244,13 @@ class MainActivity : AppCompatActivity() {
                     override fun onHotspotStarted(ssid: String, password: String) {}
                     override fun onHotspotFailed(reason: String) { clientStatusText.text = "연결 실패: $reason" }
                     override fun onClientConnected() {
-                        clientStatusText.text = "✅ 핫스팟 연결됨. VPN을 켜세요."
-                        // 로컬 핫스팟의 게이트웨이 IP는 보통 192.168.43.1
-                        applyClientConfig("192.168.43.1", 1080, "myinternet", "myinternet")
+                        // 실제 연결된 Wi-Fi의 게이트웨이(서버) IP를 읽어옴
+                        val gwIp = getGatewayIp()
+                        clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $gwIp"
+                        applyClientConfig(gwIp ?: "192.168.43.1", 1080, "myinternet", "myinternet")
+                        
+                        // 자동으로 VPN까지 연결
+                        handler.postDelayed({ requestVpn() }, 1000)
                     }
                     override fun onClientDisconnected() { clientStatusText.text = "연결 끊김" }
                 })
@@ -275,6 +279,18 @@ class MainActivity : AppCompatActivity() {
         settings.srvPort = portInput.text.toString().toIntOrNull() ?: 1080
         settings.srvUser = userInput.text.toString().ifBlank { "myinternet" }
         settings.srvPass = passInput.text.toString().ifBlank { "myinternet" }
+    }
+
+    private fun getGatewayIp(): String? {
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            val dhcp = wm.dhcpInfo
+            val ip = dhcp.gateway
+            if (ip != 0) {
+                return "${ip and 0xff}.${(ip shr 8) and 0xff}.${(ip shr 16) and 0xff}.${(ip shr 24) and 0xff}"
+            }
+        } catch (_: Exception) {}
+        return null
     }
 
     private fun requestVpn() {
