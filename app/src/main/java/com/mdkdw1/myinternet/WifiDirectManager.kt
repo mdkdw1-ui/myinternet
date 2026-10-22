@@ -52,39 +52,45 @@ class WifiDirectManager(private val context: Context) {
                     WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
                     
                     WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
-                        // 89번 줄 에러 해결: 널 체크를 확실하게 수행
-                        val device: WifiP2pDevice?
-                        if (Build.VERSION.SDK_INT >= 33) {
-                            device = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE, WifiP2pDevice::class.java)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            device = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
-                        }
-                        if (device != null) {
+                        // 스마트 캐스트 에러 방지: let 스코프 사용
+                        getDeviceExtra(intent)?.let { device ->
                             myMacAddress = device.deviceAddress
                         }
                     }
                     
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                        // 에러 해결: 명시적 타입 캐스팅과 완벽한 널 체크
-                        val parcelable = if (Build.VERSION.SDK_INT >= 33) {
-                            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
-                        } else {
-                            @Suppress("DEPRECATION")
-                            intent.getParcelableExtra<WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
-                        }
-                        
-                        if (parcelable != null && parcelable.groupFormed) {
-                            groupOwnerIp = parcelable.groupOwnerAddress?.hostAddress
-                            listener?.onConnected(groupOwnerIp)
-                        } else {
-                            listener?.onDisconnected()
+                        getInfoExtra(intent)?.let { info ->
+                            if (info.groupFormed) {
+                                groupOwnerIp = info.groupOwnerAddress?.hostAddress
+                                listener?.onConnected(groupOwnerIp)
+                            } else {
+                                listener?.onDisconnected()
+                            }
                         }
                     }
                 }
             }
         }
         context.registerReceiver(receiver, filter)
+    }
+
+    // 널 안전성을 보장하는 헬퍼 함수들
+    private fun getDeviceExtra(intent: Intent): WifiP2pDevice? {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE, WifiP2pDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<WifiP2pDevice>(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
+        }
+    }
+
+    private fun getInfoExtra(intent: Intent): WifiP2pInfo? {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
+        }
     }
 
     fun fetchMyMac(): String? {
