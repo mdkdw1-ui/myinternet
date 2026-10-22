@@ -66,16 +66,16 @@ class WifiDirectManager(private val context: Context) {
                     }
                     
                     WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
-                        val netInfo: WifiP2pInfo?
-                        if (Build.VERSION.SDK_INT >= 29) {
-                            netInfo = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
+                        // 에러 해결: 명시적 타입 캐스팅과 완벽한 널 체크
+                        val parcelable = if (Build.VERSION.SDK_INT >= 33) {
+                            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
                         } else {
                             @Suppress("DEPRECATION")
-                            netInfo = intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
+                            intent.getParcelableExtra<WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
                         }
                         
-                        if (netInfo?.groupFormed == true) {
-                            groupOwnerIp = netInfo.groupOwnerAddress?.hostAddress
+                        if (parcelable != null && parcelable.groupFormed) {
+                            groupOwnerIp = parcelable.groupOwnerAddress?.hostAddress
                             listener?.onConnected(groupOwnerIp)
                         } else {
                             listener?.onDisconnected()
