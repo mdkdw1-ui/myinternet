@@ -2,15 +2,10 @@ package com.mdkdw1.myinternet
 
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.Socket
+import java.net.*
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
-// ---------- 공용 헬퍼 (top-level object: 어떤 클래스에서도 접근 가능) ----------
 object Utils {
     fun checksum(b: ByteArray, off: Int, len: Int): Int {
         var sum = 0L; var i = off
@@ -19,7 +14,6 @@ object Utils {
         while ((sum ushr 16) != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
         return (sum.inv() and 0xFFFF).toInt()
     }
-
     fun tcpChecksum(srcIp: Int, dstIp: Int, tcp: ByteArray, off: Int, len: Int): Int {
         var sum = 0L
         sum += (srcIp ushr 16) and 0xFFFF; sum += srcIp and 0xFFFF
@@ -31,7 +25,6 @@ object Utils {
         while ((sum ushr 16) != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
         return (sum.inv() and 0xFFFF).toInt()
     }
-
     fun udpChecksum(srcIp: Int, dstIp: Int, udp: ByteArray, off: Int, len: Int): Int {
         var sum = 0L
         sum += (srcIp ushr 16) and 0xFFFF; sum += srcIp and 0xFFFF
@@ -43,28 +36,13 @@ object Utils {
         while ((sum ushr 16) != 0L) sum = (sum and 0xFFFF) + (sum ushr 16)
         return (sum.inv() and 0xFFFF).toInt()
     }
-
-    fun readInt(b: ByteArray, off: Int): Int =
-        ((b[off].toInt() and 0xFF) shl 24) or ((b[off+1].toInt() and 0xFF) shl 16) or
-        ((b[off+2].toInt() and 0xFF) shl 8) or (b[off+3].toInt() and 0xFF)
-
-    fun writeInt(b: ByteArray, off: Int, v: Int) {
-        b[off] = (v ushr 24).toByte(); b[off+1] = (v ushr 16).toByte()
-        b[off+2] = (v ushr 8).toByte(); b[off+3] = v.toByte()
-    }
-
-    fun intToBytes(v: Int) =
-        byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
-
-    fun ipStr(d: ByteArray, off: Int) =
-        "${d[off].toInt() and 0xFF}.${d[off+1].toInt() and 0xFF}.${d[off+2].toInt() and 0xFF}.${d[off+3].toInt() and 0xFF}"
-
-    fun ipStr6(d: ByteArray, off: Int) = try {
-        InetAddress.getByAddress(d.copyOfRange(off, off+16)).hostAddress ?: "::"
-    } catch (_: Exception) { "::" }
+    fun readInt(b: ByteArray, off: Int): Int = ((b[off].toInt() and 0xFF) shl 24) or ((b[off+1].toInt() and 0xFF) shl 16) or ((b[off+2].toInt() and 0xFF) shl 8) or (b[off+3].toInt() and 0xFF)
+    fun writeInt(b: ByteArray, off: Int, v: Int) { b[off] = (v ushr 24).toByte(); b[off+1] = (v ushr 16).toByte(); b[off+2] = (v ushr 8).toByte(); b[off+3] = v.toByte() }
+    fun intToBytes(v: Int) = byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
+    fun ipStr(d: ByteArray, off: Int) = "${d[off].toInt() and 0xFF}.${d[off+1].toInt() and 0xFF}.${d[off+2].toInt() and 0xFF}.${d[off+3].toInt() and 0xFF}"
+    fun ipStr6(d: ByteArray, off: Int) = try { InetAddress.getByAddress(d.copyOfRange(off, off+16)).hostAddress ?: "::" } catch (_: Exception) { "::" }
 }
 
-// ---------- 본체 ----------
 class Tun2Socks(
     private val tunIn: FileInputStream,
     private val tunOut: FileOutputStream,
@@ -76,7 +54,6 @@ class Tun2Socks(
     @Volatile private var running = false
     private val conns = ConcurrentHashMap<Int, TcpConn>()
     private val ourSeqBase = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
-
     private val udpNat = ConcurrentHashMap<UdpKey, Long>()
     @Volatile private var udpRelay: UdpRelay? = null
 
@@ -111,11 +88,14 @@ class Tun2Socks(
         val ihl = (vihl and 0x0F) * 4
         if (len < ihl + 8) return
         val proto = buf[9].toInt() and 0xFF
+        
+        // TTL 우회 (NetShare 방식)
+        buf[8] = 65.toByte()
+        
         if (proto == 6) handleTcp(buf, len, ihl)
         else if (proto == 17) handleUdp(buf, len, ihl)
     }
 
-    // =============== TCP ===============
     private fun handleTcp(buf: ByteArray, len: Int, ihl: Int) {
         if (len < ihl + 20) return
         val srcIp = Utils.readInt(buf, 12); val dstIp = Utils.readInt(buf, 16)
@@ -177,17 +157,14 @@ class Tun2Socks(
         } catch (_: Exception) { try { c.socket?.close() } catch (_: Exception) {}; conns.remove(c.srcPort) }
     }
 
-    private fun closeConn(c: TcpConn) {
-        c.closed = true; try { c.socket?.close() } catch (_: Exception) {}
-        conns.remove(c.srcPort)
-    }
+    private fun closeConn(c: TcpConn) { c.closed = true; try { c.socket?.close() } catch (_: Exception) {}; conns.remove(c.srcPort) }
 
     private fun sendTcp(c: TcpConn, seq: Int, ack: Int, flags: Int, payload: ByteArray?) {
         if (!running) return
         val plen = payload?.size ?: 0; val total = 40 + plen
         val pkt = ByteArray(total)
         pkt[0] = 0x45; pkt[2] = (total ushr 8).toByte(); pkt[3] = total.toByte()
-        pkt[6] = 0x40; pkt[8] = 64; pkt[9] = 6
+        pkt[6] = 0x40; pkt[8] = 65; pkt[9] = 6
         Utils.writeInt(pkt, 12, c.dstIp); Utils.writeInt(pkt, 16, c.srcIp)
         val t = 20
         pkt[t] = (c.dstPort ushr 8).toByte(); pkt[t+1] = c.dstPort.toByte()
@@ -203,7 +180,6 @@ class Tun2Socks(
         try { tunOut.write(pkt) } catch (_: Exception) {}
     }
 
-    // =============== UDP ===============
     private fun handleUdp(buf: ByteArray, len: Int, ihl: Int) {
         val srcIp = Utils.readInt(buf, 12); val dstIp = Utils.readInt(buf, 16)
         val srcPort = ((buf[ihl].toInt() and 0xFF) shl 8) or (buf[ihl+1].toInt() and 0xFF)
@@ -228,9 +204,7 @@ class Tun2Socks(
                     var bestKey: UdpKey? = null; var bestTime = 0L
                     for ((k, t) in udpNat) {
                         val dstHost = Utils.ipStr(Utils.intToBytes(k.dstIp), 0)
-                        if (dstHost == srcHost && k.dstPort == srcPort && t > bestTime) {
-                            bestKey = k; bestTime = t
-                        }
+                        if (dstHost == srcHost && k.dstPort == srcPort && t > bestTime) { bestKey = k; bestTime = t }
                     }
                     val k = bestKey ?: return@setResponseHandler
                     val pkt = buildUdpToTun(k.srcIp, k.srcPort, k.dstIp, k.dstPort, payload)
@@ -246,7 +220,7 @@ class Tun2Socks(
         val total = 20 + 8 + payload.size
         val pkt = ByteArray(total)
         pkt[0] = 0x45; pkt[2] = (total ushr 8).toByte(); pkt[3] = total.toByte()
-        pkt[8] = 64; pkt[9] = 17
+        pkt[8] = 65; pkt[9] = 17
         Utils.writeInt(pkt, 12, dstIp); Utils.writeInt(pkt, 16, srcIp)
         val u = 20
         pkt[u] = (dstPort ushr 8).toByte(); pkt[u+1] = dstPort.toByte()
@@ -271,11 +245,7 @@ class Tun2Socks(
 
     data class UdpKey(val srcIp: Int, val srcPort: Int, val dstIp: Int, val dstPort: Int)
 
-    // =============== SOCKS5 UDP 릴레이 ===============
-    private class UdpRelay(
-        private val host: String, private val port: Int,
-        private val user: String, private val pass: String
-    ) {
+    private class UdpRelay(private val host: String, private val port: Int, private val user: String, private val pass: String) {
         @Volatile private var alive = false
         private var control: Socket? = null
         private var udp: DatagramSocket? = null
@@ -290,37 +260,27 @@ class Tun2Socks(
             control = Socket(); MyVpnService.protectSocket(control!!)
             control!!.connect(InetSocketAddress(host, port), 10000)
             val ci = control!!.getInputStream(); val co = control!!.getOutputStream()
-
             co.write(byteArrayOf(0x05, 0x01, 0x02)); co.flush()
-            val r1 = ByteArray(2); ci.read(r1)
-            if (r1[1].toInt() != 0x02) throw Exception("auth method")
-
+            val r1 = ByteArray(2); ci.read(r1); if (r1[1].toInt() != 0x02) throw Exception("auth method")
             val u = user.toByteArray(); val p = pass.toByteArray()
             val a = ByteArray(3 + u.size + p.size)
             a[0] = 0x01; a[1] = u.size.toByte(); System.arraycopy(u, 0, a, 2, u.size)
             a[2 + u.size] = p.size.toByte(); System.arraycopy(p, 0, a, 3 + u.size, p.size)
             co.write(a); co.flush()
             val r2 = ByteArray(2); ci.read(r2); if (r2[1].toInt() != 0x00) throw Exception("auth failed")
-
             co.write(byteArrayOf(0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0)); co.flush()
-            val r3 = ByteArray(10); ci.read(r3)
-            if (r3[1].toInt() != 0x00) throw Exception("associate failed")
+            val r3 = ByteArray(10); ci.read(r3); if (r3[1].toInt() != 0x00) throw Exception("associate failed")
             relayAddr = InetAddress.getByAddress(r3.copyOfRange(4, 8))
             relayPort = ((r3[8].toInt() and 0xFF) shl 8) or (r3[9].toInt() and 0xFF)
-
             udp = DatagramSocket(); MyVpnService.protectSocket(udp!!)
             alive = true
             thread(name = "udp-recv") { recvLoop() }
-            thread(name = "udp-ctrl") {
-                try { val b = ByteArray(1); while (alive && ci.read(b) != -1) {} } catch (_: Exception) {}
-                close()
-            }
+            thread(name = "udp-ctrl") { try { val b = ByteArray(1); while (alive && ci.read(b) != -1) {} } catch (_: Exception) {}; close() }
         }
 
         fun send(dstIp: Int, dstPort: Int, payload: ByteArray) {
             if (!alive) return
-            val h = ByteArray(10)
-            h[3] = 0x01
+            val h = ByteArray(10); h[3] = 0x01
             System.arraycopy(Utils.intToBytes(dstIp), 0, h, 4, 4)
             h[8] = (dstPort ushr 8).toByte(); h[9] = dstPort.toByte()
             val pkt = h + payload
@@ -349,12 +309,7 @@ class Tun2Socks(
                 } catch (_: Exception) { if (!alive) break }
             }
         }
-
-        fun close() {
-            alive = false
-            try { control?.close() } catch (_: Exception) {}
-            try { udp?.close() } catch (_: Exception) {}
-        }
+        fun close() { alive = false; try { control?.close() } catch (_: Exception) {}; try { udp?.close() } catch (_: Exception) {} }
     }
 
     class TcpConn(val srcIp: Int, val dstIp: Int, val srcPort: Int, val dstPort: Int, var clientSeq: Int) {

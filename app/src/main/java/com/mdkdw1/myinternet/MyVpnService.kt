@@ -60,6 +60,7 @@ class MyVpnService : VpnService() {
             builder.setSession("MyInternet")
             builder.addAddress("10.0.0.2", 32)
             builder.addRoute("0.0.0.0", 0)
+            // IPv6 차단 (통신사 우회)
             builder.addDnsServer("8.8.8.8")
             builder.addDnsServer("1.1.1.1")
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
@@ -79,29 +80,22 @@ class MyVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        tun2socks?.stop()
-        tun2socks = null
+        tun2socks?.stop(); tun2socks = null
         try { tun?.close() } catch (_: Exception) {}
-        tun = null
-        isRunning = false
+        tun = null; isRunning = false
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
         else @Suppress("DEPRECATION") stopForeground(true)
     }
 
     override fun onDestroy() {
-        stopVpn()
-        instance = null
-        super.onDestroy()
+        stopVpn(); instance = null; super.onDestroy()
     }
 
     private fun buildNotification(text: String): Notification {
         val stopIntent = Intent(this, MyVpnService::class.java).apply { action = ACTION_STOP }
         val pi = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
-        val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID)
-                else @Suppress("DEPRECATION") Notification.Builder(this)
-        b.setContentTitle("MyInternet VPN").setContentText(text)
-            .setSmallIcon(android.R.drawable.stat_sys_download_done)
-            .setOngoing(true)
+        val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else @Suppress("DEPRECATION") Notification.Builder(this)
+        b.setContentTitle("MyInternet VPN").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_download_done).setOngoing(true)
         if (Build.VERSION.SDK_INT >= 26) b.addAction(Notification.Action.Builder(null, "중지", pi).build())
         else @Suppress("DEPRECATION") b.addAction(android.R.drawable.ic_delete, "중지", pi)
         return b.build()
