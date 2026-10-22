@@ -1,0 +1,33 @@
+import java.util.Properties
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+val versionProps = Properties().apply {
+    load(rootProject.file("version.properties").inputStream())
+}
+val appVersionName = versionProps.getProperty("VERSION_NAME", "0.001")
+val appVersionCode = versionProps.getProperty("VERSION_CODE", "1").toInt()
+
+android {
+    namespace = "com.mdkdw1.myinternet"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.mdkdw1.myinternet"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = appVersionCode
+        versionName = appVersionName
+    }
+    buildTypes {
+        release { isMinifyEnabled = false }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+}
