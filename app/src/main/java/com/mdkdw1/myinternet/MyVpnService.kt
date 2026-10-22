@@ -61,8 +61,9 @@ class MyVpnService : VpnService() {
             builder.addAddress("10.0.0.2", 32)
             builder.addRoute("0.0.0.0", 0)
             // IPv6 차단 (통신사 우회)
-            builder.addDnsServer("8.8.8.8")
-            builder.addDnsServer("1.1.1.1")
+            // VPN 내부 DNS를 서버(핫스팟 게이트웨이)로 지정하여 모든 DNS 쿼리를 서버가 처리하게 함
+            // (서버의 Tun2Socks UDP 릴레이가 53번 포트를 프록시함)
+            builder.addDnsServer("192.168.43.1")
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd

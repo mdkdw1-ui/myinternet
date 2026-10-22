@@ -115,10 +115,18 @@ class MainActivity : AppCompatActivity() {
         val rbServer = RadioButton(this).apply { text = "서버 (공유 폰)"; id = View.generateViewId(); isChecked = true }
         val rbClient = RadioButton(this).apply { text = "클라이언트"; id = View.generateViewId() }
         modeGroup.addView(rbServer); modeGroup.addView(rbClient)
+        
+        // 저장된 모드 복원
+        if (settings.lastMode == "client") {
+            rbClient.isChecked = true
+            serverPanel.visibility = View.GONE
+            clientPanel.visibility = View.VISIBLE
+        }
         modeGroup.setOnCheckedChangeListener { _, id ->
             val isServer = id == rbServer.id
             serverPanel.visibility = if (isServer) View.VISIBLE else View.GONE
             clientPanel.visibility = if (isServer) View.GONE else View.VISIBLE
+            settings.lastMode = if (isServer) "server" else "client"
         }
         root.addView(modeGroup)
 

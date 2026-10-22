@@ -24,7 +24,8 @@ class Socks5Server(
         running = true
         thread(name = "socks5-accept") {
             try {
-                serverSocket = ServerSocket(port)
+                // 로컬 핫스팟을 포함한 모든 네트워크 인터페이스에서 접속 허용
+                serverSocket = ServerSocket(port, 50, java.net.InetAddress.getByName("0.0.0.0"))
                 while (running) {
                     val c = try { serverSocket?.accept() ?: break } catch (_: Exception) { break }
                     thread { handle(c) }
