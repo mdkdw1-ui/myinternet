@@ -103,7 +103,9 @@ class MainActivity : AppCompatActivity() {
             wfdStatus?.text = "🟢 Wi-Fi Direct 연결됨 (오너: $ownerIp)"
             if (!ownerIp.isNullOrBlank() && ownerIp != "0.0.0.0") {
                 applyClientConfig(ownerIp, 1080, "myinternet", "myinternet")
-                toast("서버 IP 자동 설정: $ownerIp")
+                toast("연결 성공! 서버 IP: $ownerIp\nVPN 연결을 눌러주세요")
+            } else {
+                toast("연결됐지만 IP를 못 받았습니다. 수동 입력 필요")
             }
         }
         override fun onDisconnected() { wfdStatus?.text = "⚪ Wi-Fi Direct 끊김" }
@@ -217,7 +219,22 @@ class MainActivity : AppCompatActivity() {
         wfdStatus = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()); setPadding(0, 8, 0, 8) }
         p.addView(wfdStatus)
 
-        p.addView(title("4️⃣ 서버 IP 목록"))
+        p.addView(title("4️⃣ 서버 MAC 주소 (수동 연결용)"))
+        val macText = TextView(this).apply {
+            text = wfd?.myMacAddress ?: "MAC 주소 로딩 중..."
+            typeface = Typeface.MONOSPACE; textSize = 14f; setPadding(0, 8, 0, 8)
+        }
+        p.addView(macText)
+        // 3초마다 MAC 주소 갱신
+        handler.postDelayed(object : Runnable {
+            override fun run() {
+                val mac = wfd?.myMacAddress
+                if (mac != null && mac != macText.text) macText.text = mac
+                handler.postDelayed(this, 3000)
+            }
+        }, 1000)
+
+        p.addView(title("5️⃣ 서버 IP 목록"))
         ipText = TextView(this).apply {
             text = localIps().joinToString("  ").ifEmpty { "IP 없음" }
             typeface = Typeface.MONOSPACE; textSize = 15f; setPadding(0, 8, 0, 8)
@@ -276,6 +293,26 @@ class MainActivity : AppCompatActivity() {
         wfdStatus = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()); setPadding(0, 8, 0, 8) }
         p.addView(wfdStatus)
 
+        p.addView(title("🛠️ 수동 연결 (검색 실패 시)"))
+        val macInput = EditText(this).apply { hint = "서버 MAC 주소 (예: aa:bb:cc:dd:ee:ff)" }
+        p.addView(macInput)
+        p.addView(Button(this).apply {
+            text = "MAC 주소로 연결"
+            setOnClickListener {
+                val mac = macInput.text.toString().trim()
+                if (mac.matches(Regex("([0-9a-fA-F]{2}:){5}[0-9a-fA-F]{2}"))) {
+                    val dev = WifiP2pDevice().apply {
+                        deviceAddress = mac
+                        deviceName = "Manual"
+                    }
+                    wfd?.connect(dev)
+                    toast("MAC 주소로 연결 시도 중...")
+                } else {
+                    toast("올바른 MAC 주소 형식이 아닙니다")
+                }
+            }
+        })
+
         p.addView(title("🚀 원터치 연결 (핫스팟 사용 시)"))
         p.addView(Button(this).apply { text = "🔍 자동 연결"; setOnClickListener { autoConnect() } })
 
@@ -315,7 +352,11 @@ class MainActivity : AppCompatActivity() {
         val names = peers.map { "${it.deviceName} (${it.deviceAddress.takeLast(5)})" }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("서버 선택")
-            .setItems(names) { _, i -> wfd?.connect(peers[i]); toast("연결 중...") }
+            .setItems(names) { _, i -> 
+                wfdStatus?.text = "⏳ 연결 요청 중... 서버 폰 화면을 확인하세요"
+                wfd?.connect(peers[i])
+                toast("서버 폰에서 '수락'을 눌러주세요") 
+            }
             .setNegativeButton("취소", null).show()
     }
 

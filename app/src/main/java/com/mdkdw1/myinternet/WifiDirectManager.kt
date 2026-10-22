@@ -144,26 +144,42 @@ class WifiDirectManager(private val context: Context) {
 
     fun connect(device: WifiP2pDevice) {
         val ch = channel ?: return
+        
+        // 1. 검색 중지 요청
         try { manager?.stopPeerDiscovery(ch, null) } catch (_: Exception) {}
-        val cfg = WifiP2pConfig().apply {
-            deviceAddress = device.deviceAddress
-            wps.setup = WpsInfo.PBC
-            groupOwnerIntent = 0
-        }
-        try {
-            manager?.connect(ch, cfg, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() {}
-                override fun onFailure(reason: Int) {
-                    cfg.wps.setup = WpsInfo.DISPLAY
-                    try {
-                        manager?.connect(ch, cfg, object : WifiP2pManager.ActionListener {
-                            override fun onSuccess() {}
-                            override fun onFailure(r2: Int) { listener?.onError("연결 실패: $r2") }
-                        })
-                    } catch (_: SecurityException) { listener?.onError("권한 필요") }
-                }
-            })
-        } catch (_: SecurityException) { listener?.onError("위치 권한 필요") }
+        
+        // 2. 검색 중지가 완전히 반영될 때까지 500ms 대기 후 연결 시도 (BUSY 방지)
+        handler.postDelayed({
+            val cfg = WifiP2pConfig().apply {
+                deviceAddress = device.deviceAddress
+                wps.setup = WpsInfo.DISPLAY // PBC보다 호환성이 좋은 DISPLAY 우선 시도
+                groupOwnerIntent = 0 // 클라이언트가 오너가 되지 않도록
+            }
+            try {
+                manager?.connect(ch, cfg, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        listener?.onError("연결 요청 성공. 서버 화면의 수락 버튼을 누르세요")
+                    }
+                    override fun onFailure(reason: Int) {
+                        if (reason == WifiP2pManager.BUSY) {
+                            listener?.onError("BUSY: 잠시 후 다시 시도하세요")
+                            // PBC로 한 번 더 시도
+                            cfg.wps.setup = WpsInfo.PBC
+                            handler.postDelayed({
+                                try {
+                                    manager?.connect(ch, cfg, object : WifiP2pManager.ActionListener {
+                                        override fun onSuccess() { listener?.onError("연결 요청 성공") }
+                                        override fun onFailure(r2: Int) { listener?.onError("연결 실패: $r2") }
+                                    })
+                                } catch (_: SecurityException) {}
+                            }, 2000)
+                        } else {
+                            listener?.onError("연결 실패: $reason")
+                        }
+                    }
+                })
+            } catch (_: SecurityException) { listener?.onError("위치 권한 필요") }
+        }, 500)
     }
 
     fun createGroup() {
