@@ -294,7 +294,17 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestVpn() {
-        if (settings.srvHost.isBlank()) { toast("서버 정보 없음"); return }
+        // VPN을 켜기 직전에 실제 게이트웨이 IP를 강제로 다시 읽어옴
+        val currentGw = getGatewayIp()
+        if (currentGw != null) {
+            settings.srvHost = currentGw
+            hostInput.setText(currentGw)
+            toast("서버 IP 갱신됨: $currentGw")
+        } else if (settings.srvHost.isBlank()) {
+            toast("서버 정보 없음")
+            return
+        }
+        
         val intent = VpnService.prepare(this)
         if (intent != null) startActivityForResult(intent, VPN_REQ) else startVpnService()
     }
