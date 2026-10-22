@@ -14,6 +14,10 @@ val appVersionName = project.findProperty("versionName")?.toString()
 val appVersionCode = project.findProperty("versionCode")?.toString()?.toIntOrNull()
     ?: versionProps.getProperty("VERSION_CODE", "1").toInt()
 
+dependencies {
+    implementation("androidx.core:core-ktx:1.12.0")
+}
+
 android {
     namespace = "com.mdkdw1.myinternet"
     compileSdk = 34
