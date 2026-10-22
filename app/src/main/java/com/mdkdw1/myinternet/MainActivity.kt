@@ -2,8 +2,6 @@ package com.mdkdw1.myinternet
 
 import android.Manifest
 import android.app.AlertDialog
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -11,7 +9,6 @@ import android.graphics.Bitmap
 import android.graphics.Typeface
 import android.net.Uri
 import android.net.VpnService
-import android.net.wifi.p2p.WifiP2pDevice
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -33,8 +30,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var statsText: TextView
     private lateinit var toggleBtn: Button
+    private lateinit var hotspotInfoText: TextView
     private lateinit var qrImage: ImageView
-    private lateinit var wfdQrImage: ImageView
 
     private lateinit var vpnStatusText: TextView
     private lateinit var vpnInfoText: TextView
@@ -42,9 +39,9 @@ class MainActivity : AppCompatActivity() {
     private lateinit var portInput: EditText
     private lateinit var userInput: EditText
     private lateinit var passInput: EditText
-    private lateinit var wfdStatus: TextView
+    private lateinit var clientStatusText: TextView
 
-    private var wfd: WifiDirectManager? = null
+    private var localHotspot: LocalHotspotManager? = null
     private val handler = Handler(Looper.getMainLooper())
     private val VPN_REQ = 200
     private val PERM_REQ = 300
@@ -63,7 +60,7 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             val srv = Socks5Service.server
             if (srv != null && Socks5Service.isRunning)
-                statsText.text = "활성 ${srv.activeConnections.get()} · 총 ${srv.totalConnections.get()} · 전송 ${fmt(srv.bytesTransferred.get())}"
+                statsText.text = "활성 ${srv.activeConnections.get()} · 총 ${srv.totalConnections.get()}"
             else statsText.text = ""
 
             if (MyVpnService.isRunning) {
@@ -81,28 +78,28 @@ class MainActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         CrashHandler.init(this)
         settings = SettingsManager(this)
+        localHotspot = LocalHotspotManager(this)
+
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
             ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100)
-        wfd = WifiDirectManager(this).also { it.setListener(wfdListener); it.init() }
+
         buildUI()
         handler.post(refresh)
+        ensurePermissions()
     }
 
-    private val wfdListener = object : WifiDirectManager.Listener {
-        override fun onPeersChanged(peers: List<WifiP2pDevice>) {
-            wfdStatus?.text = if (peers.isEmpty()) "주변 기기 없음" else "발견: ${peers.size}대"
-            if (peers.isNotEmpty()) showPeerDialog(peers)
+    private fun ensurePermissions() {
+        val perms = mutableListOf<String>()
+        // Android 13 이상은 NEARBY_WIFI_DEVICES, 미만은 위치 권한 필요
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
         }
-        override fun onConnected(ownerIp: String?) {
-            wfdStatus?.text = "🟢 Wi-Fi Direct 연결됨 (오너: $ownerIp)"
-            if (!ownerIp.isNullOrBlank() && ownerIp != "0.0.0.0") {
-                applyClientConfig(ownerIp, 1080, "myinternet", "myinternet")
-                toast("서버 IP 자동 설정: $ownerIp")
-            }
-        }
-        override fun onDisconnected() { wfdStatus?.text = "⚪ Wi-Fi Direct 끊김" }
-        override fun onError(msg: String) { wfdStatus?.text = "⚠️ $msg"; toast(msg) }
+        if (perms.isNotEmpty()) ActivityCompat.requestPermissions(this, perms.toTypedArray(), PERM_REQ)
     }
 
     private fun buildUI() {
@@ -133,14 +130,12 @@ class MainActivity : AppCompatActivity() {
         root.addView(Button(this).apply { text = "업데이트 확인"; setOnClickListener { checkUpdate() } })
 
         setContentView(scroll)
-        ensureWfdPermission()
     }
 
-    // ---------------- Server panel ----------------
     private fun buildServerPanel(): LinearLayout {
         val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         
-        p.addView(title("1️⃣ 서버 시작"))
+        p.addView(title("1️⃣ 서버 시작 (SOCKS5)"))
         toggleBtn = Button(this).apply {
             text = if (Socks5Service.isRunning) "■ 서버 중지" else "▶ 서버 시작"
             setOnClickListener { if (Socks5Service.isRunning) stopServer() else startServer() }
@@ -151,73 +146,42 @@ class MainActivity : AppCompatActivity() {
         statsText = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()) }
         p.addView(statsText)
 
-        p.addView(title("2️⃣ Wi-Fi Direct 그룹 생성 (핫스팟 아님)"))
+        p.addView(title("2️⃣ 로컬 핫스팟 시작 (인터넷 불필요)"))
         p.addView(Button(this).apply {
-            text = "📡 이 폰을 서버로 (그룹 생성)"
+            text = "📡 로컬 핫스팟 켜기"
             setOnClickListener {
-                if (!hasWfdPermission()) { ensureWfdPermission(); return@setOnClickListener }
-                wfdStatus.text = "⏳ 그룹 생성 중..."
-                wfd?.createGroup()
+                localHotspot?.startHotspot(object : LocalHotspotManager.HotspotCallback {
+                    override fun onHotspotStarted(ssid: String, password: String) {
+                        hotspotInfoText.text = "SSID: $ssid\nPW: $password"
+                        // 접속 정보를 QR로 생성 (나중에 클라이언트가 스캔할 수 있게)
+                        val cfg = "HOTSPOT:$ssid:$password"
+                        val bmp = QrHelper.generate(cfg)
+                        qrImage.setImageBitmap(bmp)
+                        // SOCKS5 서버가 켜져 있지 않다면 자동 시작
+                        if (!Socks5Service.isRunning) startServer()
+                    }
+                    override fun onHotspotFailed(reason: String) {
+                        hotspotInfoText.text = "실패: $reason"
+                    }
+                    override fun onClientConnected() {}
+                    override fun onClientDisconnected() {}
+                })
             }
         })
-        wfdStatus = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()); setPadding(0, 8, 0, 8) }
-        p.addView(wfdStatus)
-
-        p.addView(title("3️⃣ Wi-Fi Direct 연결용 QR (MAC 주소)"))
-        p.addView(TextView(this).apply {
-            text = "삼성 보안 정책상 MAC 주소가 02:00... 으로 보이면 QR이 생성되지 않습니다. 이 경우 일반 핫스팟+QR을 사용하세요."
-            textSize = 12f; setTextColor(0xFFCC6600.toInt()); setPadding(0, 0, 0, 8)
-        })
-        
-        wfdQrImage = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(500, 500)
-            setPadding(0, 8, 0, 8)
-        }
-        p.addView(wfdQrImage)
-        
-        handler.postDelayed(object : Runnable {
-            override fun run() {
-                val mac = wfd?.fetchMyMac()
-                if (mac != null && !mac.startsWith("02:00:00")) {
-                    val bmp = QrHelper.generate("WFD:$mac")
-                    wfdQrImage.setImageBitmap(bmp)
-                }
-                handler.postDelayed(this, 3000)
-            }
-        }, 1000)
-
-        p.addView(title("4️⃣ 일반 핫스팟용 QR (IP)"))
-        qrImage = ImageView(this).apply {
-            layoutParams = LinearLayout.LayoutParams(500, 500)
-            setPadding(0, 8, 0, 8)
-        }
+        hotspotInfoText = TextView(this).apply { textSize = 14f; setPadding(0, 8, 0, 8); typeface = Typeface.MONOSPACE }
+        p.addView(hotspotInfoText)
+        qrImage = ImageView(this).apply { layoutParams = LinearLayout.LayoutParams(400, 400) }
         p.addView(qrImage)
-        refreshServerQr()
-        
-        p.addView(Button(this).apply {
-            text = "IP QR 갱신"
-            setOnClickListener { refreshServerQr() }
-        })
 
         return p
     }
 
-    private fun refreshServerQr() {
-        val ip = localIps().firstOrNull { it.startsWith("192.168.43.") }
-            ?: localIps().firstOrNull { it.startsWith("192.168.") && !it.startsWith("192.168.49.") }
-            ?: localIps().firstOrNull()
-        if (ip == null) { qrImage.setImageDrawable(null); return }
-        val cfg = "$ip:${settings.port}:${settings.username}:${settings.password}"
-        qrImage.setImageBitmap(QrHelper.generate(cfg))
-    }
-
-    // ---------------- Client panel ----------------
     private fun buildClientPanel(): LinearLayout {
         val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        p.addView(title("📷 QR 스캔으로 자동 연결"))
+        p.addView(title("📷 QR 스캔으로 로컬 핫스팟 연결"))
         p.addView(Button(this).apply {
-            text = "📷 서버 QR 스캔 → 자동 연결"
+            text = "📷 서버 QR 스캔"
             setOnClickListener {
                 val opts = ScanOptions().apply {
                     setDesiredBarcodeFormats(ScanOptions.QR_CODE)
@@ -228,28 +192,8 @@ class MainActivity : AppCompatActivity() {
                 scanLauncher.launch(opts)
             }
         })
-
-        p.addView(title("📡 Wi-Fi Direct 수동 검색"))
-        
-        // 삼성 기기 우회: 설정 화면을 열어 Wi-Fi Direct 서비스를 깨움
-        p.addView(Button(this).apply {
-            text = "⚙️ 1. Wi-Fi 설정 열기 (필수 우회)"
-            setOnClickListener {
-                startActivity(Intent(android.provider.Settings.ACTION_WIFI_SETTINGS))
-                toast("설정 화면이 열리면 뒤로 가기 후 '주변 서버 찾기'를 누르세요")
-            }
-        })
-        
-        p.addView(Button(this).apply {
-            text = "🔍 2. 주변 서버 찾기"
-            setOnClickListener {
-                if (!hasWfdPermission()) { ensureWfdPermission(); return@setOnClickListener }
-                wfdStatus.text = "검색 중..."
-                wfd?.discoverPeers()
-            }
-        })
-        wfdStatus = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()); setPadding(0, 8, 0, 8) }
-        p.addView(wfdStatus)
+        clientStatusText = TextView(this).apply { textSize = 13f; setPadding(0, 8, 0, 8) }
+        p.addView(clientStatusText)
 
         p.addView(title("수동 설정 (VPN)"))
         hostInput = EditText(this).apply { hint = "서버 IP"; setText(settings.srvHost) }
@@ -274,35 +218,35 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun handleScannedText(text: String) {
-        if (text.startsWith("WFD:")) {
-            val mac = text.removePrefix("WFD:")
-            val dev = WifiP2pDevice().apply {
-                deviceAddress = mac
-                deviceName = "QR_Server"
+        if (text.startsWith("HOTSPOT:")) {
+            val parts = text.removePrefix("HOTSPOT:").split(":")
+            if (parts.size >= 2) {
+                val ssid = parts[0]
+                val pw = parts[1]
+                clientStatusText.text = "핫스팟 연결 중: $ssid"
+                localHotspot?.connectToHotspot(ssid, pw, object : LocalHotspotManager.HotspotCallback {
+                    override fun onHotspotStarted(ssid: String, password: String) {}
+                    override fun onHotspotFailed(reason: String) { clientStatusText.text = "연결 실패: $reason" }
+                    override fun onClientConnected() {
+                        clientStatusText.text = "✅ 핫스팟 연결됨. VPN을 켜세요."
+                        // 로컬 핫스팟의 게이트웨이 IP는 보통 192.168.43.1
+                        applyClientConfig("192.168.43.1", 1080, "myinternet", "myinternet")
+                    }
+                    override fun onClientDisconnected() { clientStatusText.text = "연결 끊김" }
+                })
             }
-            wfd?.connect(dev)
-            toast("Wi-Fi Direct 연결 시도 중...")
-            wfdStatus?.text = "⏳ QR로 연결 요청 중..."
-            return
+        } else {
+            // 기존 IP QR 처리
+            val parts = text.trim().split(":")
+            if (parts.size < 2) return
+            val host = parts[0]
+            val port = parts.getOrNull(1)?.toIntOrNull() ?: 1080
+            val user = parts.getOrNull(2) ?: "myinternet"
+            val pass = parts.getOrNull(3) ?: "myinternet"
+            applyClientConfig(host, port, user, pass)
+            toast("IP 설정 완료. VPN 연결...")
+            handler.postDelayed({ requestVpn() }, 500)
         }
-
-        val parts = text.trim().split(":")
-        if (parts.size < 2) { toast("QR 형식 오류"); return }
-        val host = parts[0]
-        val port = parts.getOrNull(1)?.toIntOrNull() ?: 1080
-        val user = parts.getOrNull(2) ?: "myinternet"
-        val pass = parts.getOrNull(3) ?: "myinternet"
-        applyClientConfig(host, port, user, pass)
-        toast("스캔 완료! VPN 연결...")
-        handler.postDelayed({ requestVpn() }, 500)
-    }
-
-    private fun showPeerDialog(peers: List<WifiP2pDevice>) {
-        val names = peers.map { "${it.deviceName} (${it.deviceAddress.takeLast(5)})" }.toTypedArray()
-        AlertDialog.Builder(this)
-            .setTitle("서버 선택")
-            .setItems(names) { _, i -> wfd?.connect(peers[i]); toast("연결 중...") }
-            .setNegativeButton("취소", null).show()
     }
 
     private fun applyClientConfig(host: String, port: Int, user: String, pass: String) {
@@ -344,6 +288,8 @@ class MainActivity : AppCompatActivity() {
     private fun stopServer() {
         startService(Intent(this, Socks5Service::class.java).apply { action = Socks5Service.ACTION_STOP })
         toggleBtn.text = "▶ 서버 시작"; statusText.text = "⚪ 중지됨"; toast("서버 중지")
+        localHotspot?.stopHotspot()
+        hotspotInfoText.text = "핫스팟 중지됨"
     }
     private fun checkUpdate() {
         toast("확인 중...")
@@ -359,38 +305,5 @@ class MainActivity : AppCompatActivity() {
     private fun title(s: String) = TextView(this).apply { text = s; textSize = 17f; setPadding(0, 32, 0, 8); setTypeface(typeface, Typeface.BOLD) }
     private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
 
-    private fun hasWfdPermission(): Boolean {
-        val fine = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-        return if (Build.VERSION.SDK_INT >= 33) {
-            val nearby = ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
-            fine && nearby
-        } else fine
-    }
-    private fun ensureWfdPermission() {
-        val perms = mutableListOf<String>()
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
-            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (Build.VERSION.SDK_INT >= 33 &&
-            ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
-            perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
-        if (perms.isNotEmpty()) ActivityCompat.requestPermissions(this, perms.toTypedArray(), PERM_REQ)
-    }
-
-    private fun localIps(): List<String> {
-        val r = mutableListOf<String>()
-        try {
-            java.net.NetworkInterface.getNetworkInterfaces().toList().forEach { iface ->
-                if (iface.isUp && !iface.isLoopback) iface.inetAddresses.toList().forEach { a ->
-                    if (!a.isLoopbackAddress && a is java.net.Inet4Address) a.hostAddress?.let { r.add(it) }
-                }
-            }
-        } catch (_: Exception) {}
-        return r
-    }
-    private fun fmt(b: Long): String = when {
-        b < 1024 -> "$b B"; b < 1024 * 1024 -> "%.1f KB".format(b / 1024.0)
-        b < 1024L * 1024 * 1024 -> "%.1f MB".format(b / 1024.0 / 1024.0)
-        else -> "%.2f GB".format(b / 1024.0 / 1024.0 / 1024.0)
-    }
-    override fun onDestroy() { super.onDestroy(); handler.removeCallbacks(refresh); wfd?.close(); wfd = null }
+    override fun onDestroy() { super.onDestroy(); handler.removeCallbacks(refresh); localHotspot?.stopHotspot() }
 }
