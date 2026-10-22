@@ -168,13 +168,18 @@ class MainActivity : AppCompatActivity() {
                 
                 localHotspot?.startHotspot(object : LocalHotspotManager.HotspotCallback {
                     override fun onHotspotStarted(ssid: String, password: String) {
-                        hotspotInfoText.text = "SSID: $ssid\nPW: $password"
-                        // 접속 정보를 QR로 생성 (나중에 클라이언트가 스캔할 수 있게)
-                        val cfg = "HOTSPOT:$ssid:$password"
-                        val bmp = QrHelper.generate(cfg)
-                        qrImage.setImageBitmap(bmp)
-                        // SOCKS5 서버가 켜져 있지 않다면 자동 시작
-                        if (!Socks5Service.isRunning) startServer()
+                        // 핫스팟 생성 직후 내 IP 찾기 (보통 100~200ms 지연 후 IP가 할당됨)
+                        handler.postDelayed({
+                            val myIp = getServerHotspotIp()
+                            hotspotInfoText.text = "SSID: $ssid\nPW: $password\n내 IP: $myIp"
+                            
+                            // QR 코드에 실제 IP까지 포함시킴!
+                            val cfg = "HOTSPOT:$ssid:$password:$myIp"
+                            val bmp = QrHelper.generate(cfg)
+                            qrImage.setImageBitmap(bmp)
+                            
+                            if (!Socks5Service.isRunning) startServer()
+                        }, 1000)
                     }
                     override fun onHotspotFailed(reason: String) {
                         hotspotInfoText.text = "실패: $reason"
@@ -239,15 +244,18 @@ class MainActivity : AppCompatActivity() {
             if (parts.size >= 2) {
                 val ssid = parts[0]
                 val pw = parts[1]
+                // 서버가 QR에 담아준 IP (없으면 핫스팟 게이트웨이 사용)
+                val qrIp = parts.getOrNull(2) 
+                
                 clientStatusText.text = "핫스팟 연결 중: $ssid"
                 localHotspot?.connectToHotspot(ssid, pw, object : LocalHotspotManager.HotspotCallback {
                     override fun onHotspotStarted(ssid: String, password: String) {}
                     override fun onHotspotFailed(reason: String) { clientStatusText.text = "연결 실패: $reason" }
                     override fun onClientConnected() {
-                        // 실제 연결된 Wi-Fi의 게이트웨이(서버) IP를 읽어옴
-                        val gwIp = getGatewayIp()
-                        clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $gwIp"
-                        applyClientConfig(gwIp ?: "192.168.43.1", 1080, "myinternet", "myinternet")
+                        // QR에 있던 IP를 최우선으로 사용하고, 없으면 게이트웨이 IP 사용
+                        val serverIp = qrIp ?: getGatewayIp() ?: "192.168.43.1"
+                        clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
+                        applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
                         
                         // 자동으로 VPN까지 연결
                         handler.postDelayed({ requestVpn() }, 1000)
@@ -281,6 +289,38 @@ class MainActivity : AppCompatActivity() {
         settings.srvPass = passInput.text.toString().ifBlank { "myinternet" }
     }
 
+    private fun getServerHotspotIp(): String {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
+            for (intf in interfaces) {
+                if (intf.isUp && !intf.isLoopback) {
+                    // 로컬 핫스팟 인터페이스 이름 (ap0, swlan0 등)이거나 192.168.x, 10.x 대역인 경우
+                    val name = intf.name
+                    if (name.startsWith("ap") || name.startsWith("swlan") || name.contains("wlan1") || name.contains("softap")) {
+                        for (addr in intf.inetAddresses.toList()) {
+                            if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                                val ip = addr.hostAddress
+                                if (ip != null && (ip.startsWith("192.168.") || ip.startsWith("10."))) {
+                                    return ip
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // 못 찾으면 전체 IP 중 10.x 또는 192.168.x 대역 리턴 (폴백)
+            for (intf in interfaces) {
+                for (addr in intf.inetAddresses.toList()) {
+                    if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                        val ip = addr.hostAddress
+                        if (ip != null && ip.startsWith("10.204.")) return ip
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return "192.168.43.1" // 최후의 수단
+    }
+
     private fun getGatewayIp(): String? {
         try {
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
@@ -294,13 +334,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestVpn() {
-        // VPN을 켜기 직전에 실제 게이트웨이 IP를 강제로 다시 읽어옴
-        val currentGw = getGatewayIp()
-        if (currentGw != null) {
-            settings.srvHost = currentGw
-            hostInput.setText(currentGw)
-            toast("서버 IP 갱신됨: $currentGw")
-        } else if (settings.srvHost.isBlank()) {
+        if (settings.srvHost.isBlank()) {
             toast("서버 정보 없음")
             return
         }
