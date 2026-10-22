@@ -146,7 +146,8 @@ class MainActivity : Activity() {
             text = "📡 이 폰을 서버로 (그룹 생성)"
             setOnClickListener {
                 if (!hasWfdPermission()) { ensureWfdPermission(); return@setOnClickListener }
-                wfd?.createGroup(); toast("그룹 생성 중...")
+                wfdStatus.text = "⏳ 그룹 생성 중... (BUSY면 2초 후 다시 시도)"
+                wfd?.createGroup()
             }
         })
         wfdStatus = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()); setPadding(0, 8, 0, 8) }

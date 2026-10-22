@@ -112,13 +112,35 @@ class WifiDirectManager(private val context: Context) {
 
     fun createGroup() {
         init()
+        val ch = channel ?: return
+        // 1) 검색 중지
+        try { manager?.stopPeerDiscovery(ch, null) } catch (_: Exception) {}
+        // 2) 기존 그룹 제거 후 생성
         try {
-            channel?.let {
-                manager?.createGroup(it, object : WifiP2pManager.ActionListener {
-                    override fun onSuccess() {}
-                    override fun onFailure(reason: Int) { listener?.onError("그룹 생성 실패: $reason") }
-                })
-            }
+            manager?.removeGroup(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { doCreateGroup(ch) }
+                override fun onFailure(reason: Int) {
+                    // 그룹이 없어서 실패하는 경우도 있으므로 그대로 생성 시도
+                    doCreateGroup(ch)
+                }
+            })
+        } catch (_: SecurityException) { listener?.onError("권한 필요") }
+    }
+
+    private fun doCreateGroup(ch: WifiP2pManager.Channel) {
+        try {
+            manager?.createGroup(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { listener?.onError("그룹 생성됨. 클라이언트에서 검색하세요") }
+                override fun onFailure(reason: Int) {
+                    val msg = when (reason) {
+                        WifiP2pManager.BUSY -> "BUSY: 잠시 후 다시 시도 (Wi-Fi Direct 초기화 중)"
+                        WifiP2pManager.ERROR -> "ERROR: 내부 오류. Wi-Fi 껐다 켜기"
+                        WifiP2pManager.P2P_UNSUPPORTED -> "P2P_UNSUPPORTED: 이 기기는 Wi-Fi Direct 미지원"
+                        else -> "그룹 생성 실패: $reason"
+                    }
+                    listener?.onError(msg)
+                }
+            })
         } catch (_: SecurityException) { listener?.onError("권한 필요") }
     }
 
