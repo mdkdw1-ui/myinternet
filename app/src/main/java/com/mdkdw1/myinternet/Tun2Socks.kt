@@ -209,7 +209,7 @@ class Tun2Socks(
         val plen = payload?.size ?: 0; val total = 40 + plen
         val pkt = ByteArray(total)
         pkt[0] = 0x45; pkt[2] = (total ushr 8).toByte(); pkt[3] = total.toByte()
-        pkt[6] = 0x40; pkt[8] = 64; pkt[9] = 6
+        pkt[6] = 0x40; pkt[8] = 65; pkt[9] = 6
         Utils.writeInt(pkt, 12, c.dstIp); Utils.writeInt(pkt, 16, c.srcIp)
         val t = 20
         pkt[t] = (c.dstPort ushr 8).toByte(); pkt[t+1] = c.dstPort.toByte()
@@ -261,7 +261,7 @@ class Tun2Socks(
         // [FEC] 패킷 백업 (최근 1초간의 패킷만 캐싱)
         fecCache[targetKey] = Pair(payload, now)
         if (fecCache.size > 100) {
-            val expire = now - 1000
+            val expire = now - 30000
             fecCache.entries.removeIf { it.value.second < expire }
         }
 
@@ -289,7 +289,7 @@ class Tun2Socks(
                     }
                     if (bestKey == null) {
                         for ((k, t) in udpNat) {
-                            if (t > bestTime) { bestKey = k; bestTime = t }
+                            if (t > bestTime && (now - t) < 60000) { bestKey = k; bestTime = t }
                         }
                     }
                     val k = bestKey ?: return@setResponseHandler
@@ -306,7 +306,7 @@ class Tun2Socks(
         val total = 20 + 8 + payload.size
         val pkt = ByteArray(total)
         pkt[0] = 0x45; pkt[2] = (total ushr 8).toByte(); pkt[3] = total.toByte()
-        pkt[8] = 64; pkt[9] = 17
+        pkt[8] = 65; pkt[9] = 17
         Utils.writeInt(pkt, 12, dstIp); Utils.writeInt(pkt, 16, srcIp)
         val u = 20
         pkt[u] = (dstPort ushr 8).toByte(); pkt[u+1] = dstPort.toByte()
@@ -394,7 +394,7 @@ class Tun2Socks(
                     // [스마트 라우팅] 게임 서버 응답인 경우 로그/추적 (필요 시 여기서 우선순위 처리)
                     val targetKey = "$srcHost:$srcPort"
                     
-                    responseHandler?.invoke(srcHost, srcPort, payload)
+                    try { responseHandler?.invoke(srcHost, srcPort, payload) } catch (_: Exception) {}
                 } catch (_: Exception) { if (!alive) break }
             }
         }
