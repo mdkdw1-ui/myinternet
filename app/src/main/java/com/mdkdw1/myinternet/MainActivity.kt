@@ -62,15 +62,15 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             val srv = Socks5Service.server
             if (srv != null && Socks5Service.isRunning)
-                statsText.text = "활성 \${srv.activeConnections.get()} · 총 \${srv.totalConnections.get()}"
+                statsText.text = "활성 ${srv.activeConnections.get()} · 총 ${srv.totalConnections.get()}"
             else statsText.text = ""
 
             if (MyVpnService.isRunning) {
                 vpnStatusText.text = "🟢 VPN 연결됨"
-                vpnInfoText.text = "서버: \${settings.srvHost}:\${settings.srvPort}"
+                vpnInfoText.text = "서버: ${settings.srvHost}:${settings.srvPort}"
             } else {
                 vpnStatusText.text = "⚪ VPN 중지"
-                vpnInfoText.text = MyVpnService.lastError?.let { "오류: \$it" } ?: ""
+                vpnInfoText.text = MyVpnService.lastError?.let { "오류: $it" } ?: ""
             }
             handler.postDelayed(this, 1000)
         }
@@ -110,7 +110,7 @@ class MainActivity : AppCompatActivity() {
         }
         scroll.addView(root)
         root.addView(TextView(this).apply { text = "🌐 MyInternet"; textSize = 26f })
-        root.addView(TextView(this).apply { text = "v\$versionName"; textSize = 13f; setTextColor(0xFF888888.toInt()); setPadding(0, 0, 0, 20) })
+        root.addView(TextView(this).apply { text = "v$versionName"; textSize = 13f; setTextColor(0xFF888888.toInt()); setPadding(0, 0, 0, 20) })
 
         val modeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL; setPadding(0, 0, 0, 16) }
         val rbServer = RadioButton(this).apply { text = "서버 (공유 폰)"; id = View.generateViewId(); isChecked = true }
@@ -172,13 +172,13 @@ class MainActivity : AppCompatActivity() {
             override fun onHotspotStarted(ssid: String, password: String) {
                 handler.postDelayed({
                     val myIp = getServerHotspotIp()
-                    hotspotInfoText.text = "SSID: \$ssid\nPW: \$password\n내 IP: \$myIp"
-                    val cfg = "HOTSPOT:\$ssid:\$password:\$myIp"
+                    hotspotInfoText.text = "SSID: $ssid\nPW: $password\n내 IP: $myIp"
+                    val cfg = "HOTSPOT:$ssid:$password:$myIp"
                     qrImage.setImageBitmap(QrHelper.generate(cfg))
                 }, 1000)
             }
             override fun onHotspotFailed(reason: String) {
-                hotspotInfoText.text = "핫스팟 실패: \$reason"
+                hotspotInfoText.text = "핫스팟 실패: $reason"
             }
             override fun onClientConnected() {}
             override fun onClientDisconnected() {}
@@ -232,13 +232,13 @@ class MainActivity : AppCompatActivity() {
                 val ssid = parts[0]
                 val pw = parts[1]
                 val qrIp = parts.getOrNull(2)
-                clientStatusText.text = "핫스팟 연결 중: \$ssid"
+                clientStatusText.text = "핫스팟 연결 중: $ssid"
                 localHotspot?.connectToHotspot(ssid, pw, object : LocalHotspotManager.HotspotCallback {
                     override fun onHotspotStarted(ssid: String, password: String) {}
-                    override fun onHotspotFailed(reason: String) { clientStatusText.text = "연결 실패: \$reason" }
+                    override fun onHotspotFailed(reason: String) { clientStatusText.text = "연결 실패: $reason" }
                     override fun onClientConnected() {
                         val serverIp = qrIp ?: getGatewayIp() ?: "192.168.43.1"
-                        clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: \$serverIp"
+                        clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
                         applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
                         handler.postDelayed({ requestVpn() }, 1000)
                     }
@@ -286,7 +286,7 @@ class MainActivity : AppCompatActivity() {
         try {
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
             val ip = wm.dhcpInfo.gateway
-            if (ip != 0) return "\${ip and 0xff}.\${(ip shr 8) and 0xff}.\${(ip shr 16) and 0xff}.\${(ip shr 24) and 0xff}"
+            if (ip != 0) return "${ip and 0xff}.${(ip shr 8) and 0xff}.${(ip shr 16) and 0xff}.${(ip shr 24) and 0xff}"
         } catch (_: Exception) {}
         return null
     }
@@ -337,10 +337,10 @@ class MainActivity : AppCompatActivity() {
         toast("확인 중...")
         UpdateChecker().check(versionName) { info ->
             if (info != null) AlertDialog.Builder(this)
-                .setTitle("업데이트 발견").setMessage("v\${info.version} (현재 v\$versionName)")
+                .setTitle("업데이트 발견").setMessage("v${info.version} (현재 v$versionName)")
                 .setPositiveButton("다운로드") { _, _ -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.url))) }
                 .setNegativeButton("나중에", null).show()
-            else toast("최신 버전 (v\$versionName)")
+            else toast("최신 버전 (v$versionName)")
         }
     }
     private fun title(s: String) = TextView(this).apply { text = s; textSize = 17f; setPadding(0, 32, 0, 8); setTypeface(typeface, Typeface.BOLD) }
