@@ -6,6 +6,7 @@ import java.io.FileOutputStream
 import java.net.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
 import kotlin.concurrent.thread
 
 object Utils {
@@ -55,6 +56,7 @@ class Tun2Socks(
     @Volatile private var running = false
     private val conns = ConcurrentHashMap<Int, TcpConn>()
     private val ourSeqBase = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
+    private val threadPool: ExecutorService = Executors.newFixedThreadPool(4)
     private val udpNat = ConcurrentHashMap<UdpKey, Long>()
     @Volatile private var udpRelay: UdpRelay? = null
 
@@ -190,7 +192,7 @@ class Tun2Socks(
         val plen = payload?.size ?: 0; val total = 40 + plen
         val pkt = ByteArray(total)
         pkt[0] = 0x45; pkt[2] = (total ushr 8).toByte(); pkt[3] = total.toByte()
-        pkt[6] = 0x40; pkt[8] = 65; pkt[9] = 6
+        pkt[6] = 0x40; pkt[8] = 64; pkt[9] = 6
         Utils.writeInt(pkt, 12, c.dstIp); Utils.writeInt(pkt, 16, c.srcIp)
         val t = 20
         pkt[t] = (c.dstPort ushr 8).toByte(); pkt[t+1] = c.dstPort.toByte()
@@ -203,7 +205,7 @@ class Tun2Socks(
         pkt[10] = (ipCk ushr 8).toByte(); pkt[11] = ipCk.toByte()
         val tcpCk = Utils.tcpChecksum(c.dstIp, c.srcIp, pkt, t, 20 + plen)
         pkt[t+16] = (tcpCk ushr 8).toByte(); pkt[t+17] = tcpCk.toByte()
-        try { tunOut.write(pkt) } catch (_: Exception) {}
+        try { tunOut.write(pkt); tunOut.flush() } catch (_: Exception) {}
     }
 
     private fun handleUdp(buf: ByteArray, len: Int, ihl: Int) {
@@ -215,7 +217,7 @@ class Tun2Socks(
         val payload = buf.copyOfRange(off, len)
 
         if (dstPort == 53) {
-            thread {
+            threadPool.execute {
                 try {
                     val s = openSocks(dstIp, 53) ?: return@thread
                     s.soTimeout = 5000
@@ -250,7 +252,7 @@ class Tun2Socks(
                     }
                     val k = bestKey ?: return@setResponseHandler
                     val pkt = buildUdpToTun(k.srcIp, k.srcPort, k.dstIp, k.dstPort, payload)
-                    try { tunOut.write(pkt) } catch (_: Exception) {}
+                    try { tunOut.write(pkt); tunOut.flush() } catch (_: Exception) {}
                     udpNat[k] = now
                 }
                 udpRelay = relay
@@ -262,7 +264,7 @@ class Tun2Socks(
         val total = 20 + 8 + payload.size
         val pkt = ByteArray(total)
         pkt[0] = 0x45; pkt[2] = (total ushr 8).toByte(); pkt[3] = total.toByte()
-        pkt[8] = 65; pkt[9] = 17
+        pkt[8] = 64; pkt[9] = 17
         Utils.writeInt(pkt, 12, dstIp); Utils.writeInt(pkt, 16, srcIp)
         val u = 20
         pkt[u] = (dstPort ushr 8).toByte(); pkt[u+1] = dstPort.toByte()
@@ -311,6 +313,7 @@ class Tun2Socks(
             if (relayAddr!!.isAnyLocalAddress) relayAddr = InetAddress.getByName(host)
             relayPort = ((r3[8].toInt() and 0xFF) shl 8) or (r3[9].toInt() and 0xFF)
             udp = DatagramSocket()
+            try { udp!!.sendBufferSize = 65536; udp!!.receiveBufferSize = 65536 } catch (_: Exception) {}
             if (n != null) { try { n.bindSocket(udp!!) } catch (_: Exception) { MyVpnService.protectSocket(udp!!) } }
             else MyVpnService.protectSocket(udp!!)
             alive = true
