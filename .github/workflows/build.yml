@@ -30,7 +30,12 @@ jobs:
         with:
           ndk-version: r25c
 
-      - name: Build hev-socks5-tunnel with ndk-build
+      - name: Setup Android NDK r25c
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          
+      - name: Build hev-socks5-tunnel with ndk-build (NDK r25c)
         run: |
           # 1. 소스 다운로드 및 압축 해제
           curl -L -o hev.tar.xz https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-2.14.4.tar.xz
@@ -38,17 +43,16 @@ jobs:
           mv hev-socks5-tunnel-2.14.4 hev-src
           cd hev-src
           
-          # 2. 기존 Android.mk에 PKGNAME/CLSNAME CFLAGS 추가
+          # 2. Android.mk 수정 (PKGNAME/CLSNAME 추가)
           sed -i 's/LOCAL_CFLAGS :=/LOCAL_CFLAGS := -DPKGNAME=com\/mdkdw1\/myinternet -DCLSNAME=HevTunnelManager/' Android.mk
           
-          # 3. ndk-build 실행 (APP_ALLOW_MISSING_DEPS=true로 누락된 모듈 무시)
-          NDK_PATH=$ANDROID_NDK_LATEST_HOME
-          if [ -z "$NDK_PATH" ]; then NDK_PATH=$ANDROID_NDK_HOME; fi
-          APP_ALLOW_MISSING_DEPS=true $NDK_PATH/ndk-build \
+          # 3. NDK r25c로 빌드
+          $ANDROID_NDK_HOME/ndk-build \
             NDK_PROJECT_PATH=. \
             APP_BUILD_SCRIPT=Android.mk \
             APP_ABI=arm64-v8a \
             APP_PLATFORM=android-24 \
+            APP_ALLOW_MISSING_DEPS=true \
             NDK_LIBS_OUT=./libs \
             NDK_OUT=./obj
           
