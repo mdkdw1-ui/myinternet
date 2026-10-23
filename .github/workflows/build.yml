@@ -37,23 +37,15 @@ jobs:
           tar -xf hev.tar.xz
           mv hev-socks5-tunnel-2.14.4 hev-src
           cd hev-src
-
-          # 2. Android.mk 파일을 직접 수정하여 패키지명 강제 주입
-          # (기존 APP_CFLAGS가 무시되는 경우를 대비)
-          cat > jni/Android.mk << 'MKEOF'
-          LOCAL_PATH := $(call my-dir)
-          include $(CLEAR_VARS)
-          LOCAL_MODULE := hev-socks5-tunnel
-          LOCAL_SRC_FILES := $(wildcard $(LOCAL_PATH)/src/*.c)
-          LOCAL_C_INCLUDES := $(LOCAL_PATH)/third-part/hev-task-system/include \
-                              $(LOCAL_PATH)/third-part/yaml/include \
-                              $(LOCAL_PATH)/third-part/lwip/src/include \
-                              $(LOCAL_PATH)/third-part/lwip/src/ports/include
-          LOCAL_CFLAGS := -DPKGNAME=com/mdkdw1/myinternet -DCLSNAME=HevTunnelManager -O2
-          include $(BUILD_SHARED_LIBRARY)
-          MKEOF
-
-          # 3. ndk-build 실행
+          
+          # 2. jni 폴더 생성 및 Android.mk 복사/수정
+          mkdir -p jni
+          cp Android.mk jni/Android.mk
+          
+          # 3. Android.mk에 PKGNAME/CLSNAME CFLAGS 추가 (기존 LOCAL_CFLAGS 뒤에 붙임)
+          sed -i 's/LOCAL_CFLAGS :=/LOCAL_CFLAGS := -DPKGNAME=com\/mdkdw1\/myinternet -DCLSNAME=HevTunnelManager/' jni/Android.mk
+          
+          # 4. ndk-build 실행
           NDK_PATH=$ANDROID_NDK_LATEST_HOME
           if [ -z "$NDK_PATH" ]; then NDK_PATH=$ANDROID_NDK_HOME; fi
           $NDK_PATH/ndk-build \
@@ -63,8 +55,8 @@ jobs:
             APP_PLATFORM=android-24 \
             NDK_LIBS_OUT=./libs \
             NDK_OUT=./obj
-
-          # 4. 빌드된 .so 파일 복사
+          
+          # 5. 빌드된 .so 파일 복사
           cd ..
           mkdir -p app/src/main/jniLibs/arm64-v8a
           cp hev-src/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/
