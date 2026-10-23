@@ -66,7 +66,7 @@ class Tun2Socks(
             while (running) {
                 Thread.sleep(30000)
                 val now = System.currentTimeMillis()
-                udpNat.entries.removeIf { now - it.value > 300000 }
+                udpNat.entries.removeIf { now - it.value > 120000 } // 2분 타임아웃
             }
         }
     }
@@ -151,7 +151,7 @@ class Tun2Socks(
             try { sock.sendBufferSize = 65536; sock.receiveBufferSize = 65536 } catch (_: Exception) {}
             bind(sock)
             sock.connect(InetSocketAddress(srvHost, srvPort), 20000)
-            sock.soTimeout = 10000
+            sock.soTimeout = 20000
             val i = DataInputStream(sock.getInputStream()); val o = sock.getOutputStream()
             o.write(byteArrayOf(5, 1, 2)); o.flush()
             val r1 = ByteArray(2); i.readFully(r1)
@@ -254,15 +254,18 @@ class Tun2Socks(
                 relay.setResponseHandler { srcHost, srcPort, payload ->
                     val now = System.currentTimeMillis()
                     var bestKey: UdpKey? = null; var bestTime = 0L
+                    // 1. IP와 포트가 정확히 일치하는 세션 우선
                     for ((k, t) in udpNat) {
                         val dstHost = Utils.ipStr(Utils.intToBytes(k.dstIp), 0)
                         if (dstHost == srcHost && k.dstPort == srcPort && t > bestTime) { bestKey = k; bestTime = t }
                     }
+                    // 2. 포트만 일치하는 세션 (게임 서버 IP 변동 대응)
                     if (bestKey == null) {
                         for ((k, t) in udpNat) {
                             if (k.dstPort == srcPort && t > bestTime) { bestKey = k; bestTime = t }
                         }
                     }
+                    // 3. 가장 최근 통신한 세션 (Fullcone NAT 최후의 수단)
                     if (bestKey == null) {
                         for ((k, t) in udpNat) {
                             if (t > bestTime) { bestKey = k; bestTime = t }
@@ -315,7 +318,7 @@ class Tun2Socks(
             val n = LocalHotspotManager.hotspotNetwork
             if (n != null) { try { n.bindSocket(control!!) } catch (_: Exception) { MyVpnService.protectSocket(control!!) } }
             else MyVpnService.protectSocket(control!!)
-            control!!.connect(InetSocketAddress(host, port), 10000)
+            control!!.connect(InetSocketAddress(host, port), 20000)
             val ci = control!!.getInputStream(); val co = control!!.getOutputStream()
             co.write(byteArrayOf(0x05, 0x01, 0x02)); co.flush()
             val r1 = ByteArray(2); ci.read(r1); if (r1[1].toInt() != 0x02) throw Exception("auth method")

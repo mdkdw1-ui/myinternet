@@ -17,10 +17,10 @@ class MyVpnService : VpnService() {
 
         @Volatile var isRunning = false
         @Volatile var lastError: String? = null
+        @Volatile var instance: MyVpnService? = null
 
         fun protectSocket(s: java.net.Socket) { try { instance?.protect(s) } catch (_: Exception) {} }
         fun protectSocket(s: java.net.DatagramSocket) { try { instance?.protect(s) } catch (_: Exception) {} }
-        @Volatile var instance: MyVpnService? = null
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -53,18 +53,26 @@ class MyVpnService : VpnService() {
             lastError = "서버 정보가 비어 있습니다"; stopSelf(); return
         }
         try {
-            startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 중 · \$host:\$port"))
+            startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 중"))
             val builder = Builder()
             builder.setSession("MyInternet")
             builder.addAddress("10.0.0.2", 32)
+            // UDP 패킷이 VPN을 완벽히 통과하도록 0.0.0.0 라우팅
             builder.addRoute("0.0.0.0", 0)
+            // IPv6 라우팅 차단 (게임 UDP 지연 방지)
+            builder.addAddress("fd00::1", 128)
+            
             LocalHotspotManager.hotspotNetwork?.let { builder.setUnderlyingNetworks(arrayOf(it)) }
+            
+            // 게임 서버 DNS 응답을 위해 여러 DNS 등록
             builder.addDnsServer("8.8.8.8")
             builder.addDnsServer("1.1.1.1")
             builder.setMtu(1350)
+            
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
+            
             val inStream = FileInputStream(pfd.fileDescriptor)
             val outStream = FileOutputStream(pfd.fileDescriptor)
             tun2socks = Tun2Socks(inStream, outStream, host, port, user, pass)
