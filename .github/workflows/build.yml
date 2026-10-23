@@ -36,23 +36,21 @@ jobs:
           echo "new_name=$NEW_NAME" >> $GITHUB_OUTPUT
           echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
 
-      - name: Build hev-socks5-tunnel with ndk-build
+      - name: Setup Android NDK 25.2.9519653
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+          
+      - name: Build hev-socks5-tunnel with ndk-build (NDK r25c)
         run: |
           # 1. 소스 다운로드 및 압축 해제
           curl -L -o hev.tar.xz https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-2.14.4.tar.xz
           tar -xf hev.tar.xz
           mv hev-socks5-tunnel-2.14.4 hev-src
           
-          # 2. ndk-build 실행 (GitHub Actions에는 NDK가 기본 설치됨)
+          # 2. ndk-build 실행 (설치된 NDK 경로 사용)
           cd hev-src
-          
-          # NDK 경로 확인 (GitHub Actions ubuntu 러너 기준)
-          NDK_PATH=$ANDROID_NDK_LATEST_HOME
-          if [ -z "$NDK_PATH" ]; then
-            NDK_PATH=$ANDROID_NDK_HOME
-          fi
-          
-          $NDK_PATH/ndk-build \
+          $ANDROID_NDK_HOME/ndk-build \
             NDK_PROJECT_PATH=. \
             APP_BUILD_SCRIPT=Android.mk \
             APP_ABI=arm64-v8a \
