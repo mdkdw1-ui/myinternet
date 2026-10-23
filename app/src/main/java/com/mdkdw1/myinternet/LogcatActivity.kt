@@ -49,9 +49,9 @@ class LogcatActivity : Activity() {
                 val process = Runtime.getRuntime().exec("logcat -d -v brief")
                 val reader = BufferedReader(InputStreamReader(process.inputStream))
                 val sb = StringBuilder()
-                var line: String?
-                while (reader.readLine().also { line = it } != null) {
-                    if (line!!.contains("myinternet") || line.contains("hev-socks5") || line.contains("AndroidRuntime") || line.contains("System.err")) {
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.contains("myinternet") || line.contains("hev-socks5") || line.contains("AndroidRuntime") || line.contains("System.err")) {
                         sb.append(line).append("\n")
                     }
                 }
