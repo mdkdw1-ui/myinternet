@@ -83,7 +83,7 @@ class MyVpnService : VpnService() {
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
             
-            val started = HevTunnelManager.start(this, pfd.fd, host, port, user, pass, cacheDir)
+            val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
             if (!started) {
                 lastError = HevTunnelManager.lastError ?: "hev-socks5-tunnel 시작 실패"
                 android.widget.Toast.makeText(this, lastError, android.widget.Toast.LENGTH_LONG).show()

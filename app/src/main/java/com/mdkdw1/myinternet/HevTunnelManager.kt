@@ -1,41 +1,29 @@
 package com.mdkdw1.myinternet
 
-import android.content.Context
 import java.io.File
 import java.io.FileOutputStream
 
 object HevTunnelManager {
     @Volatile private var running = false
     @Volatile var lastError: String? = null
-    private var process: Process? = null
 
-    fun start(context: Context, tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
-        lastError = null
+    // JNI 함수 선언 (C 라이브러리와 시그니처가 정확히 일치해야 함)
+    external fun TProxyStartService(configPath: String, fd: Int): Boolean
+    external fun TProxyStopService()
+    external fun TProxyGetStats(): LongArray?
+
+    init {
+        try {
+            System.loadLibrary("hev-socks5-tunnel")
+        } catch (e: Throwable) {
+            lastError = "라이브러리 로드 실패: ${e.javaClass.simpleName} - ${e.message}"
+            e.printStackTrace()
+        }
+    }
+
+    fun start(tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
+        if (lastError != null && !running) return false
         if (running) return true
-
-        val binaryFile = File(context.filesDir, "hev-socks5-tunnel")
-        if (!binaryFile.exists()) {
-            try {
-                context.assets.open("hev-socks5-tunnel").use { input ->
-                    FileOutputStream(binaryFile).use { output -> input.copyTo(output) }
-                }
-                // 실행 권한 강제 부여
-                binaryFile.setExecutable(true, false)
-                val chmod = Runtime.getRuntime().exec(arrayOf("chmod", "755", binaryFile.absolutePath))
-                chmod.waitFor()
-            } catch (e: Exception) {
-                val assetList = try { context.assets.list("")?.joinToString(", ") ?: "비어있음" } catch (_: Exception) { "확인불가" }
-                lastError = "바이너리 추출 실패: ${e.javaClass.simpleName} - ${e.message}\n\n[assets 내용]\n$assetList"
-                return false
-            }
-        }
-
-        // 파일 검증
-        if (!binaryFile.canExecute()) {
-            lastError = "파일은 있지만 실행 권한 없음. (파일 크기: ${binaryFile.length()} bytes)"
-            return false
-        }
-
         return try {
             val configFile = File(cacheDir, "hev_config.yml")
             val yaml = """
@@ -56,20 +44,23 @@ object HevTunnelManager {
             """.trimIndent()
             FileOutputStream(configFile).use { it.write(yaml.toByteArray()) }
 
-            val cmd = arrayOf(binaryFile.absolutePath, "-c", configFile.absolutePath)
-            process = Runtime.getRuntime().exec(cmd)
-            running = true
-            true
-        } catch (e: Exception) {
-            lastError = "실행 오류: ${e.javaClass.simpleName} - ${e.message}"
+            val result = TProxyStartService(configFile.absolutePath, tunFd)
+            if (result) {
+                running = true
+                configFile.delete()
+            } else {
+                lastError = "TProxyStartService가 false 반환"
+            }
+            result
+        } catch (e: Throwable) {
+            lastError = "JNI 호출 실패: ${e.javaClass.simpleName} - ${e.message}"
             false
         }
     }
 
     fun stop() {
         if (!running) return
-        try { process?.destroy() } catch (_: Exception) {}
-        process = null
+        try { TProxyStopService() } catch (_: Exception) {}
         running = false
     }
 
