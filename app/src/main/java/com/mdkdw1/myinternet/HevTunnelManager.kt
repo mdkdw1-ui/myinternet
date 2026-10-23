@@ -1,35 +1,34 @@
 package com.mdkdw1.myinternet
 
+import android.content.Context
 import java.io.File
 import java.io.FileOutputStream
 
 object HevTunnelManager {
     @Volatile private var running = false
-    @Volatile private var loadError: String? = null
+    private var process: Process? = null
 
-    external fun TProxyStartService(configPath: String, fd: Int): Boolean
-    external fun TProxyStopService()
-    external fun TProxyGetStats(): LongArray?
-
-    init {
-        try {
-            System.loadLibrary("hev-socks5-tunnel")
-        } catch (e: Throwable) {
-            loadError = "라이브러리 로드 실패: ${e.javaClass.simpleName} - ${e.message}"
-            e.printStackTrace()
-        }
-    }
-
-    fun getLoadError(): String? = loadError
-
-    fun start(tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
-        if (loadError != null) return false
+    fun start(context: Context, tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
         if (running) return true
         return try {
+            // assets에서 바이너리 추출 (없다면 실패)
+            val binaryFile = File(context.filesDir, "hev-socks5-tunnel")
+            if (!binaryFile.exists()) {
+                try {
+                    context.assets.open("hev-socks5-tunnel").use { input ->
+                        FileOutputStream(binaryFile).use { output -> input.copyTo(output) }
+                    }
+                    binaryFile.setExecutable(true)
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                    return false
+                }
+            }
+
             val configFile = File(cacheDir, "hev_config.yml")
             val yaml = """
                 tunnel:
-                  mtu: 1500
+                  mtu: 1350
                   ipv4: 198.18.0.1
                 socks5:
                   port: $srvPort
@@ -45,13 +44,13 @@ object HevTunnelManager {
             """.trimIndent()
             FileOutputStream(configFile).use { it.write(yaml.toByteArray()) }
 
-            val result = TProxyStartService(configFile.absolutePath, tunFd)
-            if (result) {
-                running = true
-                configFile.delete()
-            }
-            result
-        } catch (e: Throwable) {
+            // TUN FD를 인자로 넘겨 실행 (hev-socks5-tunnel은 --tun-fd 옵션 지원 안함, 우회 필요)
+            // 현재는 단순 실행만 테스트
+            val cmd = arrayOf(binaryFile.absolutePath, "-c", configFile.absolutePath)
+            process = Runtime.getRuntime().exec(cmd)
+            running = true
+            true
+        } catch (e: Exception) {
             e.printStackTrace()
             false
         }
@@ -59,7 +58,8 @@ object HevTunnelManager {
 
     fun stop() {
         if (!running) return
-        try { TProxyStopService() } catch (_: Exception) {}
+        try { process?.destroy() } catch (_: Exception) {}
+        process = null
         running = false
     }
 
