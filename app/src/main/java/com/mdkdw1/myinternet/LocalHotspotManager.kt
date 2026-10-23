@@ -14,6 +14,9 @@ import android.os.Looper
 import android.util.Log
 
 class LocalHotspotManager(private val context: Context) {
+    companion object {
+        @Volatile var hotspotNetwork: android.net.Network? = null
+    }
 
     private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
     private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -95,6 +98,7 @@ class LocalHotspotManager(private val context: Context) {
         val networkCallback = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: android.net.Network) {
                 super.onAvailable(network)
+                hotspotNetwork = network
                 Handler(Looper.getMainLooper()).post {
                     callback.onClientConnected()
                 }
@@ -109,6 +113,7 @@ class LocalHotspotManager(private val context: Context) {
 
             override fun onLost(network: android.net.Network) {
                 super.onLost(network)
+                hotspotNetwork = null
                 Handler(Looper.getMainLooper()).post {
                     callback.onClientDisconnected()
                 }

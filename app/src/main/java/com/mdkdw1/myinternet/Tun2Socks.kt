@@ -1,9 +1,11 @@
 package com.mdkdw1.myinternet
 
+import java.io.DataInputStream
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.*
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.Executors
 import kotlin.concurrent.thread
 
 object Utils {
@@ -39,8 +41,7 @@ object Utils {
     fun readInt(b: ByteArray, off: Int): Int = ((b[off].toInt() and 0xFF) shl 24) or ((b[off+1].toInt() and 0xFF) shl 16) or ((b[off+2].toInt() and 0xFF) shl 8) or (b[off+3].toInt() and 0xFF)
     fun writeInt(b: ByteArray, off: Int, v: Int) { b[off] = (v ushr 24).toByte(); b[off+1] = (v ushr 16).toByte(); b[off+2] = (v ushr 8).toByte(); b[off+3] = v.toByte() }
     fun intToBytes(v: Int) = byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
-    fun ipStr(d: ByteArray, off: Int) = "${d[off].toInt() and 0xFF}.${d[off+1].toInt() and 0xFF}.${d[off+2].toInt() and 0xFF}.${d[off+3].toInt() and 0xFF}"
-    fun ipStr6(d: ByteArray, off: Int) = try { InetAddress.getByAddress(d.copyOfRange(off, off+16)).hostAddress ?: "::" } catch (_: Exception) { "::" }
+    fun ipStr(d: ByteArray, off: Int) = "\${d[off].toInt() and 0xFF}.\${d[off+1].toInt() and 0xFF}.\${d[off+2].toInt() and 0xFF}.\${d[off+3].toInt() and 0xFF}"
 }
 
 class Tun2Socks(
@@ -60,7 +61,6 @@ class Tun2Socks(
     fun start() {
         running = true
         thread(name = "tun-read") { loop() }
-        thread(name = "udp-nat-cleaner") { natCleaner() }
     }
 
     fun stop() {
@@ -88,12 +88,20 @@ class Tun2Socks(
         val ihl = (vihl and 0x0F) * 4
         if (len < ihl + 8) return
         val proto = buf[9].toInt() and 0xFF
-        
-        // TTL 우회 (NetShare 방식)
         buf[8] = 65.toByte()
-        
         if (proto == 6) handleTcp(buf, len, ihl)
         else if (proto == 17) handleUdp(buf, len, ihl)
+    }
+
+    private fun bind(s: Socket) {
+        val n = LocalHotspotManager.hotspotNetwork
+        if (n != null) { try { n.bindSocket(s) } catch (_: Exception) { MyVpnService.protectSocket(s) } }
+        else MyVpnService.protectSocket(s)
+    }
+    private fun bind(s: DatagramSocket) {
+        val n = LocalHotspotManager.hotspotNetwork
+        if (n != null) { try { n.bindSocket(s) } catch (_: Exception) { MyVpnService.protectSocket(s) } }
+        else MyVpnService.protectSocket(s)
     }
 
     private fun handleTcp(buf: ByteArray, len: Int, ihl: Int) {
@@ -118,7 +126,9 @@ class Tun2Socks(
         if (payload.isNotEmpty()) {
             c.clientSeq = seq + payload.size
             sendTcp(c, c.ourSeq, c.clientSeq, 0x10, null)
-            thread { try { c.socket?.getOutputStream()?.write(payload) } catch (_: Exception) { closeConn(c) } }
+            c.writer.execute {
+                try { c.socket?.getOutputStream()?.write(payload) } catch (_: Exception) { closeConn(c) }
+            }
         }
         if (isFin) {
             try { c.socket?.shutdownOutput() } catch (_: Exception) {}
@@ -126,38 +136,54 @@ class Tun2Socks(
         }
     }
 
-    private fun connectUpstream(c: TcpConn) {
+    private fun openSocks(dstIp: Int, dstPort: Int): Socket? {
+        val sock = Socket()
         try {
-            val sock = Socket(); MyVpnService.protectSocket(sock)
+            bind(sock)
             sock.connect(InetSocketAddress(srvHost, srvPort), 10000)
-            val i = sock.getInputStream(); val o = sock.getOutputStream()
-            o.write(byteArrayOf(0x05, 0x01, 0x02)); o.flush()
-            val r1 = ByteArray(2); i.read(r1); if (r1.size < 2 || r1[1].toInt() != 0x02) { sock.close(); return }
+            sock.soTimeout = 10000
+            val i = DataInputStream(sock.getInputStream()); val o = sock.getOutputStream()
+            o.write(byteArrayOf(5, 1, 2)); o.flush()
+            val r1 = ByteArray(2); i.readFully(r1)
+            if (r1[1].toInt() != 2) throw Exception("auth method")
             val u = srvUser.toByteArray(); val p = srvPass.toByteArray()
-            val auth = ByteArray(3 + u.size + p.size)
-            auth[0] = 0x01; auth[1] = u.size.toByte(); System.arraycopy(u, 0, auth, 2, u.size)
-            auth[2 + u.size] = p.size.toByte(); System.arraycopy(p, 0, auth, 3 + u.size, p.size)
-            o.write(auth); o.flush()
-            val r2 = ByteArray(2); i.read(r2); if (r2.size < 2 || r2[1].toInt() != 0x00) { sock.close(); return }
-            val req = ByteArray(10)
-            req[0] = 0x05; req[1] = 0x01; req[2] = 0x00; req[3] = 0x01
-            System.arraycopy(Utils.intToBytes(c.dstIp), 0, req, 4, 4)
-            req[8] = (c.dstPort ushr 8).toByte(); req[9] = c.dstPort.toByte()
-            o.write(req); o.flush()
-            val r3 = ByteArray(10); i.read(r3); if (r3.size < 2 || r3[1].toInt() != 0x00) { sock.close(); return }
-            c.socket = sock; c.ourSeq = ourSeqBase
-            sendTcp(c, c.ourSeq, c.clientSeq, 0x12, null); c.ourSeq += 1
-            val rb = ByteArray(8192)
-            while (running && !c.closed) {
-                val n = try { i.read(rb) } catch (_: Exception) { -1 }
-                if (n <= 0) break
-                sendTcp(c, c.ourSeq, c.clientSeq, 0x18, rb.copyOfRange(0, n)); c.ourSeq += n
-            }
-            sendTcp(c, c.ourSeq, c.clientSeq, 0x11, null); c.ourSeq += 1
-        } catch (_: Exception) { try { c.socket?.close() } catch (_: Exception) {}; conns.remove(c.srcPort) }
+            o.write(byteArrayOf(1, u.size.toByte()) + u + byteArrayOf(p.size.toByte()) + p); o.flush()
+            val r2 = ByteArray(2); i.readFully(r2)
+            if (r2[1].toInt() != 0) throw Exception("auth failed")
+            o.write(byteArrayOf(5, 1, 0, 1) + Utils.intToBytes(dstIp) + byteArrayOf((dstPort ushr 8).toByte(), dstPort.toByte())); o.flush()
+            val r3 = ByteArray(10); i.readFully(r3)
+            if (r3[1].toInt() != 0) throw Exception("connect rep=\${r3[1]}")
+            sock.soTimeout = 0
+            return sock
+        } catch (e: Exception) {
+            try { sock.close() } catch (_: Exception) {}
+            return null
+        }
     }
 
-    private fun closeConn(c: TcpConn) { c.closed = true; try { c.socket?.close() } catch (_: Exception) {}; conns.remove(c.srcPort) }
+    private fun connectUpstream(c: TcpConn) {
+        val sock = openSocks(c.dstIp, c.dstPort)
+        if (sock == null) {
+            sendTcp(c, 0, c.clientSeq, 0x14, null)
+            conns.remove(c.srcPort); return
+        }
+        c.socket = sock; c.ourSeq = ourSeqBase
+        sendTcp(c, c.ourSeq, c.clientSeq, 0x12, null); c.ourSeq += 1
+        val i = sock.getInputStream()
+        val rb = ByteArray(1360)
+        while (running && !c.closed) {
+            val n = try { i.read(rb) } catch (_: Exception) { -1 }
+            if (n <= 0) break
+            sendTcp(c, c.ourSeq, c.clientSeq, 0x18, rb.copyOfRange(0, n)); c.ourSeq += n
+        }
+        sendTcp(c, c.ourSeq, c.clientSeq, 0x11, null); c.ourSeq += 1
+    }
+
+    private fun closeConn(c: TcpConn) {
+        c.closed = true; try { c.socket?.close() } catch (_: Exception) {}
+        try { c.writer.shutdown() } catch (_: Exception) {}
+        conns.remove(c.srcPort)
+    }
 
     private fun sendTcp(c: TcpConn, seq: Int, ack: Int, flags: Int, payload: ByteArray?) {
         if (!running) return
@@ -188,20 +214,17 @@ class Tun2Socks(
         if (off >= len) return
         val payload = buf.copyOfRange(off, len)
 
-        // DNS(53번 포트)는 서버 프록시를 거치지 않고, 클라이언트 폰에서 직접 조회 (로컬 핫스팟 환경에서 필수)
         if (dstPort == 53) {
             thread {
                 try {
-                    val s = DatagramSocket()
-                    MyVpnService.protectSocket(s)
-                    s.soTimeout = 3000
-                    s.send(DatagramPacket(payload, payload.size, InetAddress.getByName(Utils.ipStr(Utils.intToBytes(dstIp), 0)), dstPort))
-                    val rbuf = ByteArray(4096)
-                    val rp = DatagramPacket(rbuf, rbuf.size)
-                    s.receive(rp)
+                    val s = openSocks(dstIp, 53) ?: return@thread
+                    s.soTimeout = 5000
+                    val o = s.getOutputStream(); val i = DataInputStream(s.getInputStream())
+                    o.write(byteArrayOf((payload.size ushr 8).toByte(), payload.size.toByte()) + payload); o.flush()
+                    val lenResp = i.readUnsignedShort()
+                    val resp = ByteArray(lenResp); i.readFully(resp)
                     s.close()
-                    val pkt = buildUdpToTun(srcIp, srcPort, dstIp, dstPort, rbuf.copyOfRange(0, rp.length))
-                    try { tunOut.write(pkt) } catch (_: Exception) {}
+                    try { tunOut.write(buildUdpToTun(srcIp, srcPort, dstIp, dstPort, resp)) } catch (_: Exception) {}
                 } catch (_: Exception) {}
             }
             return
@@ -254,14 +277,6 @@ class Tun2Socks(
         return pkt
     }
 
-    private fun natCleaner() {
-        while (running) {
-            Thread.sleep(15000)
-            val now = System.currentTimeMillis()
-            udpNat.entries.removeIf { now - it.value > 60000 }
-        }
-    }
-
     data class UdpKey(val srcIp: Int, val srcPort: Int, val dstIp: Int, val dstPort: Int)
 
     private class UdpRelay(private val host: String, private val port: Int, private val user: String, private val pass: String) {
@@ -276,7 +291,10 @@ class Tun2Socks(
         fun setResponseHandler(h: (String, Int, ByteArray) -> Unit) { responseHandler = h }
 
         fun start() {
-            control = Socket(); MyVpnService.protectSocket(control!!)
+            control = Socket()
+            val n = LocalHotspotManager.hotspotNetwork
+            if (n != null) { try { n.bindSocket(control!!) } catch (_: Exception) { MyVpnService.protectSocket(control!!) } }
+            else MyVpnService.protectSocket(control!!)
             control!!.connect(InetSocketAddress(host, port), 10000)
             val ci = control!!.getInputStream(); val co = control!!.getOutputStream()
             co.write(byteArrayOf(0x05, 0x01, 0x02)); co.flush()
@@ -290,8 +308,11 @@ class Tun2Socks(
             co.write(byteArrayOf(0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0)); co.flush()
             val r3 = ByteArray(10); ci.read(r3); if (r3[1].toInt() != 0x00) throw Exception("associate failed")
             relayAddr = InetAddress.getByAddress(r3.copyOfRange(4, 8))
+            if (relayAddr!!.isAnyLocalAddress) relayAddr = InetAddress.getByName(host)
             relayPort = ((r3[8].toInt() and 0xFF) shl 8) or (r3[9].toInt() and 0xFF)
-            udp = DatagramSocket(); MyVpnService.protectSocket(udp!!)
+            udp = DatagramSocket()
+            if (n != null) { try { n.bindSocket(udp!!) } catch (_: Exception) { MyVpnService.protectSocket(udp!!) } }
+            else MyVpnService.protectSocket(udp!!)
             alive = true
             thread(name = "udp-recv") { recvLoop() }
             thread(name = "udp-ctrl") { try { val b = ByteArray(1); while (alive && ci.read(b) != -1) {} } catch (_: Exception) {}; close() }
@@ -319,7 +340,7 @@ class Tun2Socks(
                     when (atyp) {
                         0x01 -> { srcHost = Utils.ipStr(data, 4); off = 8 }
                         0x03 -> { val l = data[4].toInt() and 0xFF; srcHost = String(data, 5, l); off = 5 + l }
-                        0x04 -> { srcHost = Utils.ipStr6(data, 4); off = 20 }
+                        0x04 -> { srcHost = try { InetAddress.getByAddress(data.copyOfRange(4, 20)).hostAddress ?: "::" } catch (_: Exception) { "::" }; off = 20 }
                         else -> continue
                     }
                     val srcPort = ((data[off].toInt() and 0xFF) shl 8) or (data[off+1].toInt() and 0xFF)
@@ -333,5 +354,6 @@ class Tun2Socks(
 
     class TcpConn(val srcIp: Int, val dstIp: Int, val srcPort: Int, val dstPort: Int, var clientSeq: Int) {
         var ourSeq = 0; @Volatile var closed = false; var socket: Socket? = null
+        val writer = Executors.newSingleThreadExecutor()
     }
 }

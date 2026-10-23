@@ -55,14 +55,19 @@ class MyVpnService : VpnService() {
             lastError = "서버 정보가 비어 있습니다"; stopSelf(); return
         }
         try {
-            startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 중 · $host:$port"))
+            startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 중 · \$host:\$port"))
             val builder = Builder()
             builder.setSession("MyInternet")
             builder.addAddress("10.0.0.2", 32)
             builder.addRoute("0.0.0.0", 0)
-            // IPv6 차단 (통신사 우회)
-            // 로컬 핫스팟 환경에서는 시스템 DNS를 쓰지 않고, 앱 내부에서 DNS(UDP 53)를 처리하게 함
+
+            // 로컬 핫스팟 네트워크를 VPN의 기반 네트워크로 지정
+            LocalHotspotManager.hotspotNetwork?.let { builder.setUnderlyingNetworks(arrayOf(it)) }
+
+            // DNS는 8.8.8.8로 설정 (서버를 통해 프록시됨)
+            builder.addDnsServer("8.8.8.8")
             builder.setMtu(1400)
+
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
