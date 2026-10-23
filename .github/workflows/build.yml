@@ -30,36 +30,45 @@ jobs:
         with:
           ndk-version: r25c
 
-      - name: Build hev-socks5-tunnel with ndk-build (JNI)
+      - name: Build hev-socks5-tunnel with ndk-build
         run: |
+          # 1. 소스 다운로드 및 압축 해제
           curl -L -o hev.tar.xz https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-2.14.4.tar.xz
           tar -xf hev.tar.xz
           mv hev-socks5-tunnel-2.14.4 hev-src
           cd hev-src
-          $ANDROID_NDK_HOME/ndk-build \
+
+          # 2. Android.mk 파일을 직접 수정하여 패키지명 강제 주입
+          # (기존 APP_CFLAGS가 무시되는 경우를 대비)
+          cat > jni/Android.mk << 'MKEOF'
+          LOCAL_PATH := $(call my-dir)
+          include $(CLEAR_VARS)
+          LOCAL_MODULE := hev-socks5-tunnel
+          LOCAL_SRC_FILES := $(wildcard $(LOCAL_PATH)/src/*.c)
+          LOCAL_C_INCLUDES := $(LOCAL_PATH)/third-part/hev-task-system/include \
+                              $(LOCAL_PATH)/third-part/yaml/include \
+                              $(LOCAL_PATH)/third-part/lwip/src/include \
+                              $(LOCAL_PATH)/third-part/lwip/src/ports/include
+          LOCAL_CFLAGS := -DPKGNAME=com/mdkdw1/myinternet -DCLSNAME=HevTunnelManager -O2
+          include $(BUILD_SHARED_LIBRARY)
+          MKEOF
+
+          # 3. ndk-build 실행
+          NDK_PATH=$ANDROID_NDK_LATEST_HOME
+          if [ -z "$NDK_PATH" ]; then NDK_PATH=$ANDROID_NDK_HOME; fi
+          $NDK_PATH/ndk-build \
             NDK_PROJECT_PATH=. \
-            APP_BUILD_SCRIPT=Android.mk \
+            APP_BUILD_SCRIPT=jni/Android.mk \
             APP_ABI=arm64-v8a \
             APP_PLATFORM=android-24 \
-            APP_CFLAGS="-DPKGNAME=com/mdkdw1/myinternet -DCLSNAME=HevTunnelManager" \
             NDK_LIBS_OUT=./libs \
             NDK_OUT=./obj
+
+          # 4. 빌드된 .so 파일 복사
           cd ..
           mkdir -p app/src/main/jniLibs/arm64-v8a
           cp hev-src/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/
           ls -la app/src/main/jniLibs/arm64-v8a/
-
-      - name: Bump version from latest tag
-        id: bump
-        run: |
-          git fetch --tags
-          LAST=$(git tag -l 'v*' | sort -V | tail -1 | sed 's/^v//')
-          LAST=${LAST:-0.000}
-          NEW_NAME=$(python3 -c "print(f'{${LAST} + 0.001:.3f}')")
-          NEW_CODE=$(( $(git rev-list --count HEAD) ))
-          echo "new_name=$NEW_NAME" >> $GITHUB_OUTPUT
-          echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
-
       - name: Build Debug APK
         run: |
           gradle assembleDebug --no-daemon --stacktrace \
