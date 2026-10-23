@@ -43,6 +43,17 @@ class MyVpnService : VpnService() {
     }
 
     private fun startVpn() {
+        try {
+            startVpnInternal()
+        } catch (e: Throwable) {
+            lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
+            e.printStackTrace()
+            try { stopVpn() } catch (_: Exception) {}
+            stopSelf()
+        }
+    }
+
+    private fun startVpnInternal() {
         if (isRunning) return
         lastError = null
         val s = SettingsManager(this)
