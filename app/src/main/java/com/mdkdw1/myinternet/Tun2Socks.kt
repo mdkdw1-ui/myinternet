@@ -41,7 +41,7 @@ object Utils {
     fun readInt(b: ByteArray, off: Int): Int = ((b[off].toInt() and 0xFF) shl 24) or ((b[off+1].toInt() and 0xFF) shl 16) or ((b[off+2].toInt() and 0xFF) shl 8) or (b[off+3].toInt() and 0xFF)
     fun writeInt(b: ByteArray, off: Int, v: Int) { b[off] = (v ushr 24).toByte(); b[off+1] = (v ushr 16).toByte(); b[off+2] = (v ushr 8).toByte(); b[off+3] = v.toByte() }
     fun intToBytes(v: Int) = byteArrayOf((v ushr 24).toByte(), (v ushr 16).toByte(), (v ushr 8).toByte(), v.toByte())
-    fun ipStr(d: ByteArray, off: Int) = "\${d[off].toInt() and 0xFF}.\${d[off+1].toInt() and 0xFF}.\${d[off+2].toInt() and 0xFF}.\${d[off+3].toInt() and 0xFF}"
+    fun ipStr(d: ByteArray, off: Int) = "${d[off].toInt() and 0xFF}.${d[off+1].toInt() and 0xFF}.${d[off+2].toInt() and 0xFF}.${d[off+3].toInt() and 0xFF}"
 }
 
 class Tun2Socks(
@@ -66,7 +66,7 @@ class Tun2Socks(
             while (running) {
                 Thread.sleep(30000)
                 val now = System.currentTimeMillis()
-                udpNat.entries.removeIf { now - it.value > 300000 } // 5분 타임아웃
+                udpNat.entries.removeIf { now - it.value > 300000 }
             }
         }
     }
@@ -97,7 +97,7 @@ class Tun2Socks(
         val ihl = (vihl and 0x0F) * 4
         if (len < ihl + 8) return
         val proto = buf[9].toInt() and 0xFF
-        buf[8] = 64.toByte() // TTL 조작
+        buf[8] = 64.toByte()
         if (proto == 6) handleTcp(buf, len, ihl)
         else if (proto == 17) handleUdp(buf, len, ihl)
     }
@@ -162,7 +162,7 @@ class Tun2Socks(
             if (r2[1].toInt() != 0) throw Exception("auth failed")
             o.write(byteArrayOf(5, 1, 0, 1) + Utils.intToBytes(dstIp) + byteArrayOf((dstPort ushr 8).toByte(), dstPort.toByte())); o.flush()
             val r3 = ByteArray(10); i.readFully(r3)
-            if (r3[1].toInt() != 0) throw Exception("connect rep=\${r3[1]}")
+            if (r3[1].toInt() != 0) throw Exception("connect rep=${r3[1]}")
             sock.soTimeout = 0
             return sock
         } catch (e: Exception) {

@@ -2,6 +2,8 @@ package com.mdkdw1.myinternet
 
 import android.Manifest
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -60,15 +62,15 @@ class MainActivity : AppCompatActivity() {
         override fun run() {
             val srv = Socks5Service.server
             if (srv != null && Socks5Service.isRunning)
-                statsText.text = "활성 ${srv.activeConnections.get()} · 총 ${srv.totalConnections.get()}"
+                statsText.text = "활성 \${srv.activeConnections.get()} · 총 \${srv.totalConnections.get()}"
             else statsText.text = ""
 
             if (MyVpnService.isRunning) {
                 vpnStatusText.text = "🟢 VPN 연결됨"
-                vpnInfoText.text = "서버: ${settings.srvHost}:${settings.srvPort}"
+                vpnInfoText.text = "서버: \${settings.srvHost}:\${settings.srvPort}"
             } else {
                 vpnStatusText.text = "⚪ VPN 중지"
-                vpnInfoText.text = MyVpnService.lastError?.let { "오류: $it" } ?: ""
+                vpnInfoText.text = MyVpnService.lastError?.let { "오류: \$it" } ?: ""
             }
             handler.postDelayed(this, 1000)
         }
@@ -91,7 +93,6 @@ class MainActivity : AppCompatActivity() {
 
     private fun ensurePermissions() {
         val perms = mutableListOf<String>()
-        // Android 13 이상은 NEARBY_WIFI_DEVICES, 미만은 위치 권한 필요
         if (Build.VERSION.SDK_INT >= 33) {
             if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
                 perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
@@ -109,24 +110,16 @@ class MainActivity : AppCompatActivity() {
         }
         scroll.addView(root)
         root.addView(TextView(this).apply { text = "🌐 MyInternet"; textSize = 26f })
-        root.addView(TextView(this).apply { text = "v$versionName"; textSize = 13f; setTextColor(0xFF888888.toInt()); setPadding(0, 0, 0, 20) })
+        root.addView(TextView(this).apply { text = "v\$versionName"; textSize = 13f; setTextColor(0xFF888888.toInt()); setPadding(0, 0, 0, 20) })
 
         val modeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL; setPadding(0, 0, 0, 16) }
         val rbServer = RadioButton(this).apply { text = "서버 (공유 폰)"; id = View.generateViewId(); isChecked = true }
         val rbClient = RadioButton(this).apply { text = "클라이언트"; id = View.generateViewId() }
         modeGroup.addView(rbServer); modeGroup.addView(rbClient)
-        
-        // 저장된 모드 복원
-        if (settings.lastMode == "client") {
-            rbClient.isChecked = true
-            serverPanel.visibility = View.GONE
-            clientPanel.visibility = View.VISIBLE
-        }
         modeGroup.setOnCheckedChangeListener { _, id ->
             val isServer = id == rbServer.id
             serverPanel.visibility = if (isServer) View.VISIBLE else View.GONE
             clientPanel.visibility = if (isServer) View.GONE else View.VISIBLE
-            settings.lastMode = if (isServer) "server" else "client"
         }
         root.addView(modeGroup)
 
@@ -143,10 +136,12 @@ class MainActivity : AppCompatActivity() {
     private fun buildServerPanel(): LinearLayout {
         val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         
-        p.addView(title("1️⃣ 서버 시작 (SOCKS5)"))
+        p.addView(title("1️⃣ 원터치 서버 시작 (프록시 + 핫스팟)"))
         toggleBtn = Button(this).apply {
-            text = if (Socks5Service.isRunning) "■ 서버 중지" else "▶ 서버 시작"
-            setOnClickListener { if (Socks5Service.isRunning) stopServer() else startServer() }
+            text = if (Socks5Service.isRunning) "■ 서버 중지" else "▶ 서버 시작 (한 번에)"
+            setOnClickListener { 
+                if (Socks5Service.isRunning) stopServer() else startServerAndHotspot() 
+            }
         }
         p.addView(toggleBtn)
         statusText = TextView(this).apply { text = if (Socks5Service.isRunning) "🟢 실행 중" else "⚪ 중지됨"; textSize = 16f; setPadding(0, 16, 0, 8) }
@@ -154,53 +149,46 @@ class MainActivity : AppCompatActivity() {
         statsText = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()) }
         p.addView(statsText)
 
-        p.addView(title("2️⃣ 로컬 핫스팟 시작 (인터넷 불필요)"))
-        p.addView(Button(this).apply {
-            text = "📡 로컬 핫스팟 켜기"
-            setOnClickListener {
-                // 권한 체크 (Android 13+)
-                if (Build.VERSION.SDK_INT >= 33 &&
-                    ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
-                    ActivityCompat.requestPermissions(this@MainActivity, arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES), PERM_REQ)
-                    toast("주변 기기 권한을 허용한 후 다시 눌러주세요.")
-                    return@setOnClickListener
-                }
-                
-                localHotspot?.startHotspot(object : LocalHotspotManager.HotspotCallback {
-                    override fun onHotspotStarted(ssid: String, password: String) {
-                        // 핫스팟 생성 직후 내 IP 찾기 (보통 100~200ms 지연 후 IP가 할당됨)
-                        handler.postDelayed({
-                            val myIp = getServerHotspotIp()
-                            hotspotInfoText.text = "SSID: $ssid\nPW: $password\n내 IP: $myIp"
-                            
-                            // QR 코드에 실제 IP까지 포함시킴!
-                            val cfg = "HOTSPOT:$ssid:$password:$myIp"
-                            val bmp = QrHelper.generate(cfg)
-                            qrImage.setImageBitmap(bmp)
-                            
-                            if (!Socks5Service.isRunning) startServer()
-                        }, 1000)
-                    }
-                    override fun onHotspotFailed(reason: String) {
-                        hotspotInfoText.text = "실패: $reason"
-                    }
-                    override fun onClientConnected() {}
-                    override fun onClientDisconnected() {}
-                })
-            }
-        })
+        p.addView(title("2️⃣ 클라이언트 접속 정보 (QR)"))
         hotspotInfoText = TextView(this).apply { textSize = 14f; setPadding(0, 8, 0, 8); typeface = Typeface.MONOSPACE }
         p.addView(hotspotInfoText)
-        qrImage = ImageView(this).apply { layoutParams = LinearLayout.LayoutParams(400, 400) }
+        qrImage = ImageView(this).apply { layoutParams = LinearLayout.LayoutParams(500, 500) }
         p.addView(qrImage)
 
         return p
     }
 
+    private fun startServerAndHotspot() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED &&
+            Build.VERSION.SDK_INT >= 33) {
+            ensurePermissions()
+            toast("권한을 허용한 후 다시 눌러주세요")
+            return
+        }
+        
+        startServer()
+        
+        localHotspot?.startHotspot(object : LocalHotspotManager.HotspotCallback {
+            override fun onHotspotStarted(ssid: String, password: String) {
+                handler.postDelayed({
+                    val myIp = getServerHotspotIp()
+                    hotspotInfoText.text = "SSID: \$ssid\nPW: \$password\n내 IP: \$myIp"
+                    val cfg = "HOTSPOT:\$ssid:\$password:\$myIp"
+                    qrImage.setImageBitmap(QrHelper.generate(cfg))
+                }, 1000)
+            }
+            override fun onHotspotFailed(reason: String) {
+                hotspotInfoText.text = "핫스팟 실패: \$reason"
+            }
+            override fun onClientConnected() {}
+            override fun onClientDisconnected() {}
+        })
+    }
+
     private fun buildClientPanel(): LinearLayout {
         val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
 
-        p.addView(title("📷 QR 스캔으로 로컬 핫스팟 연결"))
+        p.addView(title("📷 QR 스캔으로 핫스팟 연결"))
         p.addView(Button(this).apply {
             text = "📷 서버 QR 스캔"
             setOnClickListener {
@@ -208,7 +196,6 @@ class MainActivity : AppCompatActivity() {
                     setDesiredBarcodeFormats(ScanOptions.QR_CODE)
                     setPrompt("서버 화면의 QR을 스캔하세요")
                     setBeepEnabled(false)
-                    setOrientationLocked(false)
                 }
                 scanLauncher.launch(opts)
             }
@@ -244,37 +231,64 @@ class MainActivity : AppCompatActivity() {
             if (parts.size >= 2) {
                 val ssid = parts[0]
                 val pw = parts[1]
-                // 서버가 QR에 담아준 IP (없으면 핫스팟 게이트웨이 사용)
-                val qrIp = parts.getOrNull(2) 
-                
-                clientStatusText.text = "핫스팟 연결 중: $ssid"
+                val qrIp = parts.getOrNull(2)
+                clientStatusText.text = "핫스팟 연결 중: \$ssid"
                 localHotspot?.connectToHotspot(ssid, pw, object : LocalHotspotManager.HotspotCallback {
                     override fun onHotspotStarted(ssid: String, password: String) {}
-                    override fun onHotspotFailed(reason: String) { clientStatusText.text = "연결 실패: $reason" }
+                    override fun onHotspotFailed(reason: String) { clientStatusText.text = "연결 실패: \$reason" }
                     override fun onClientConnected() {
-                        // QR에 있던 IP를 최우선으로 사용하고, 없으면 게이트웨이 IP 사용
                         val serverIp = qrIp ?: getGatewayIp() ?: "192.168.43.1"
-                        clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
+                        clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: \$serverIp"
                         applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
-                        
-                        // 자동으로 VPN까지 연결
                         handler.postDelayed({ requestVpn() }, 1000)
                     }
                     override fun onClientDisconnected() { clientStatusText.text = "연결 끊김" }
                 })
             }
         } else {
-            // 기존 IP QR 처리
             val parts = text.trim().split(":")
             if (parts.size < 2) return
-            val host = parts[0]
-            val port = parts.getOrNull(1)?.toIntOrNull() ?: 1080
-            val user = parts.getOrNull(2) ?: "myinternet"
-            val pass = parts.getOrNull(3) ?: "myinternet"
-            applyClientConfig(host, port, user, pass)
+            applyClientConfig(parts[0], parts.getOrNull(1)?.toIntOrNull() ?: 1080, parts.getOrNull(2) ?: "myinternet", parts.getOrNull(3) ?: "myinternet")
             toast("IP 설정 완료. VPN 연결...")
             handler.postDelayed({ requestVpn() }, 500)
         }
+    }
+
+    private fun getServerHotspotIp(): String {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
+            for (intf in interfaces) {
+                if (intf.isUp && !intf.isLoopback) {
+                    val name = intf.name
+                    if (name.startsWith("ap") || name.startsWith("swlan") || name.contains("wlan1") || name.contains("softap")) {
+                        for (addr in intf.inetAddresses.toList()) {
+                            if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                                val ip = addr.hostAddress
+                                if (ip != null && (ip.startsWith("192.168.") || ip.startsWith("10."))) return ip
+                            }
+                        }
+                    }
+                }
+            }
+            for (intf in interfaces) {
+                for (addr in intf.inetAddresses.toList()) {
+                    if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                        val ip = addr.hostAddress
+                        if (ip != null && ip.startsWith("10.204.")) return ip
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return "192.168.43.1"
+    }
+
+    private fun getGatewayIp(): String? {
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            val ip = wm.dhcpInfo.gateway
+            if (ip != 0) return "\${ip and 0xff}.\${(ip shr 8) and 0xff}.\${(ip shr 16) and 0xff}.\${(ip shr 24) and 0xff}"
+        } catch (_: Exception) {}
+        return null
     }
 
     private fun applyClientConfig(host: String, port: Int, user: String, pass: String) {
@@ -289,56 +303,8 @@ class MainActivity : AppCompatActivity() {
         settings.srvPass = passInput.text.toString().ifBlank { "myinternet" }
     }
 
-    private fun getServerHotspotIp(): String {
-        try {
-            val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
-            for (intf in interfaces) {
-                if (intf.isUp && !intf.isLoopback) {
-                    // 로컬 핫스팟 인터페이스 이름 (ap0, swlan0 등)이거나 192.168.x, 10.x 대역인 경우
-                    val name = intf.name
-                    if (name.startsWith("ap") || name.startsWith("swlan") || name.contains("wlan1") || name.contains("softap")) {
-                        for (addr in intf.inetAddresses.toList()) {
-                            if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
-                                val ip = addr.hostAddress
-                                if (ip != null && (ip.startsWith("192.168.") || ip.startsWith("10."))) {
-                                    return ip
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            // 못 찾으면 전체 IP 중 10.x 또는 192.168.x 대역 리턴 (폴백)
-            for (intf in interfaces) {
-                for (addr in intf.inetAddresses.toList()) {
-                    if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
-                        val ip = addr.hostAddress
-                        if (ip != null && ip.startsWith("10.204.")) return ip
-                    }
-                }
-            }
-        } catch (_: Exception) {}
-        return "192.168.43.1" // 최후의 수단
-    }
-
-    private fun getGatewayIp(): String? {
-        try {
-            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
-            val dhcp = wm.dhcpInfo
-            val ip = dhcp.gateway
-            if (ip != 0) {
-                return "${ip and 0xff}.${(ip shr 8) and 0xff}.${(ip shr 16) and 0xff}.${(ip shr 24) and 0xff}"
-            }
-        } catch (_: Exception) {}
-        return null
-    }
-
     private fun requestVpn() {
-        if (settings.srvHost.isBlank()) {
-            toast("서버 정보 없음")
-            return
-        }
-        
+        if (settings.srvHost.isBlank()) { toast("서버 정보 없음"); return }
         val intent = VpnService.prepare(this)
         if (intent != null) startActivityForResult(intent, VPN_REQ) else startVpnService()
     }
@@ -363,19 +329,18 @@ class MainActivity : AppCompatActivity() {
     }
     private fun stopServer() {
         startService(Intent(this, Socks5Service::class.java).apply { action = Socks5Service.ACTION_STOP })
-        toggleBtn.text = "▶ 서버 시작"; statusText.text = "⚪ 중지됨"; toast("서버 중지")
         localHotspot?.stopHotspot()
-        hotspotInfoText.text = "핫스팟 중지됨"
+        toggleBtn.text = "▶ 서버 시작 (한 번에)"; statusText.text = "⚪ 중지됨"; hotspotInfoText.text = "중지됨"
+        toast("서버 및 핫스팟 중지")
     }
     private fun checkUpdate() {
         toast("확인 중...")
         UpdateChecker().check(versionName) { info ->
             if (info != null) AlertDialog.Builder(this)
-                .setTitle("업데이트 발견")
-                .setMessage("v${info.version} (현재 v$versionName)")
+                .setTitle("업데이트 발견").setMessage("v\${info.version} (현재 v\$versionName)")
                 .setPositiveButton("다운로드") { _, _ -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.url))) }
                 .setNegativeButton("나중에", null).show()
-            else toast("최신 버전 (v$versionName)")
+            else toast("최신 버전 (v\$versionName)")
         }
     }
     private fun title(s: String) = TextView(this).apply { text = s; textSize = 17f; setPadding(0, 32, 0, 8); setTypeface(typeface, Typeface.BOLD) }
