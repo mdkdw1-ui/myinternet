@@ -11,20 +11,16 @@ object HevTunnelManager {
     fun start(context: Context, tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
         if (running) return true
         return try {
-            // assets에서 바이너리 추출 (없다면 실패)
-            val binaryFile = File(context.filesDir, "hev-socks5-tunnel")
-            if (!binaryFile.exists()) {
-                try {
-                    context.assets.open("hev-socks5-tunnel").use { input ->
-                        FileOutputStream(binaryFile).use { output -> input.copyTo(output) }
-                    }
-                    binaryFile.setExecutable(true)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                    return false
-                }
+            // 1. APK 내부의 lib 폴더에서 바이너리 위치 찾기
+            val nativeLibDir = context.applicationInfo.nativeLibraryDir
+            val libFile = File(nativeLibDir, "libhev-socks5-tunnel.so")
+            
+            if (!libFile.exists()) {
+                android.util.Log.e("HevTunnel", "Library not found in $nativeLibDir")
+                return false
             }
 
+            // 2. 설정 파일 생성
             val configFile = File(cacheDir, "hev_config.yml")
             val yaml = """
                 tunnel:
@@ -44,9 +40,9 @@ object HevTunnelManager {
             """.trimIndent()
             FileOutputStream(configFile).use { it.write(yaml.toByteArray()) }
 
-            // TUN FD를 인자로 넘겨 실행 (hev-socks5-tunnel은 --tun-fd 옵션 지원 안함, 우회 필요)
-            // 현재는 단순 실행만 테스트
-            val cmd = arrayOf(binaryFile.absolutePath, "-c", configFile.absolutePath)
+            // 3. 실행 파일 실행 (TUN FD는 현재 넘기지 않음. 단순 실행 테스트)
+            // 실제로는 --tun-fd 옵션을 넘겨야 하지만, 일단 실행 가능 여부만 확인
+            val cmd = arrayOf(libFile.absolutePath, "-c", configFile.absolutePath)
             process = Runtime.getRuntime().exec(cmd)
             running = true
             true

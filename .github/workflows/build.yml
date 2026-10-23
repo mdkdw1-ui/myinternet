@@ -36,34 +36,12 @@ jobs:
           echo "new_name=$NEW_NAME" >> $GITHUB_OUTPUT
           echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
 
-      - name: Setup Android NDK 25.2.9519653
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r25c
-          
-      - name: Build hev-socks5-tunnel with ndk-build (NDK r25c)
+      - name: Download prebuilt hev-socks5-tunnel binary to jniLibs
         run: |
-          # 1. 소스 다운로드 및 압축 해제
-          curl -L -o hev.tar.xz https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-2.14.4.tar.xz
-          tar -xf hev.tar.xz
-          mv hev-socks5-tunnel-2.14.4 hev-src
-          
-          # 2. ndk-build 실행 (설치된 NDK 경로 사용)
-          cd hev-src
-          $ANDROID_NDK_HOME/ndk-build \
-            NDK_PROJECT_PATH=. \
-            APP_BUILD_SCRIPT=Android.mk \
-            APP_ABI=arm64-v8a \
-            APP_PLATFORM=android-24 \
-            APP_CFLAGS="-DPKGNAME=com/mdkdw1/myinternet -DCLSNAME=HevTunnelManager" \
-            APP_CFLAGS="-DPKGNAME=com/mdkdw1/myinternet -DCLSNAME=HevTunnelManager" \
-            NDK_LIBS_OUT=./libs \
-            NDK_OUT=./obj
-          
-          # 3. 빌드된 .so 파일을 프로젝트 jniLibs로 복사
-          cd ..
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          cp hev-src/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/
+          curl -L -o app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so \
+            https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-linux-arm64
+          chmod +x app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so
           ls -la app/src/main/jniLibs/arm64-v8a/
       - name: Build Debug APK
         run: |
