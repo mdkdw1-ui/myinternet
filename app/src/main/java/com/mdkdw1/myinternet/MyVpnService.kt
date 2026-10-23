@@ -7,8 +7,6 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import java.io.FileInputStream
 import java.io.FileOutputStream
-import java.net.DatagramSocket
-import java.net.Socket
 
 class MyVpnService : VpnService() {
     companion object {
@@ -17,12 +15,12 @@ class MyVpnService : VpnService() {
         const val ACTION_START = "VPN_START"
         const val ACTION_STOP = "VPN_STOP"
 
-        @Volatile var instance: MyVpnService? = null
         @Volatile var isRunning = false
         @Volatile var lastError: String? = null
 
-        fun protectSocket(s: Socket) { try { instance?.protect(s) } catch (_: Exception) {} }
-        fun protectSocket(s: DatagramSocket) { try { instance?.protect(s) } catch (_: Exception) {} }
+        fun protectSocket(s: java.net.Socket) { try { instance?.protect(s) } catch (_: Exception) {} }
+        fun protectSocket(s: java.net.DatagramSocket) { try { instance?.protect(s) } catch (_: Exception) {} }
+        @Volatile var instance: MyVpnService? = null
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -60,14 +58,9 @@ class MyVpnService : VpnService() {
             builder.setSession("MyInternet")
             builder.addAddress("10.0.0.2", 32)
             builder.addRoute("0.0.0.0", 0)
-
-            // 로컬 핫스팟 네트워크를 VPN의 기반 네트워크로 지정
             LocalHotspotManager.hotspotNetwork?.let { builder.setUnderlyingNetworks(arrayOf(it)) }
-
-            // DNS는 8.8.8.8로 설정 (서버를 통해 프록시됨)
             builder.addDnsServer("8.8.8.8")
             builder.setMtu(1400)
-
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
