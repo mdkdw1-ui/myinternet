@@ -6,7 +6,6 @@ import java.io.FileOutputStream
 import java.net.*
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
-import java.util.concurrent.ExecutorService
 import kotlin.concurrent.thread
 
 object Utils {
@@ -56,28 +55,18 @@ class Tun2Socks(
     @Volatile private var running = false
     private val conns = ConcurrentHashMap<Int, TcpConn>()
     private val ourSeqBase = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
-    private val threadPool: ExecutorService = Executors.newFixedThreadPool(4)
     private val udpNat = ConcurrentHashMap<UdpKey, Long>()
     @Volatile private var udpRelay: UdpRelay? = null
-
-    // [스마트 라우팅] 게임 서버로 추정되는 고정 IP/포트를 기억하여 우선 처리
-    private val smartGameTargets = ConcurrentHashMap<String, Long>()
-    // [FEC] 손실 방지를 위해 최근에 보낸 UDP 패킷을 잠시 보관
-    private val fecCache = ConcurrentHashMap<String, Pair<ByteArray, Long>>()
-
+    private val threadPool = Executors.newFixedThreadPool(8)
 
     fun start() {
         running = true
         thread(name = "tun-read") { loop() }
-        // [스마트 라우팅] 게임 세션 유지를 위한 하트비트 스레드
-        thread(name = "smart-keepalive") {
+        thread(name = "udp-cleaner") {
             while (running) {
-                try {
-                    Thread.sleep(5000)
-                    val now = System.currentTimeMillis()
-                    // 1분 이상 통신 없는 목적지는 목록에서 제거
-                    smartGameTargets.entries.removeIf { now - it.value > 60000 }
-                } catch (_: Exception) {}
+                Thread.sleep(30000)
+                val now = System.currentTimeMillis()
+                udpNat.entries.removeIf { now - it.value > 300000 } // 5분 타임아웃
             }
         }
     }
@@ -87,6 +76,7 @@ class Tun2Socks(
         conns.values.forEach { try { it.socket?.close() } catch (_: Exception) {} }
         conns.clear()
         udpRelay?.close(); udpRelay = null
+        threadPool.shutdown()
     }
 
     private fun loop() {
@@ -107,7 +97,7 @@ class Tun2Socks(
         val ihl = (vihl and 0x0F) * 4
         if (len < ihl + 8) return
         val proto = buf[9].toInt() and 0xFF
-        buf[8] = 65.toByte()
+        buf[8] = 64.toByte() // TTL 조작
         if (proto == 6) handleTcp(buf, len, ihl)
         else if (proto == 17) handleUdp(buf, len, ihl)
     }
@@ -158,6 +148,7 @@ class Tun2Socks(
     private fun openSocks(dstIp: Int, dstPort: Int): Socket? {
         val sock = Socket()
         try {
+            try { sock.sendBufferSize = 65536; sock.receiveBufferSize = 65536 } catch (_: Exception) {}
             bind(sock)
             sock.connect(InetSocketAddress(srvHost, srvPort), 10000)
             sock.soTimeout = 10000
@@ -189,7 +180,7 @@ class Tun2Socks(
         c.socket = sock; c.ourSeq = ourSeqBase
         sendTcp(c, c.ourSeq, c.clientSeq, 0x12, null); c.ourSeq += 1
         val i = sock.getInputStream()
-        val rb = ByteArray(1360)
+        val rb = ByteArray(1350)
         while (running && !c.closed) {
             val n = try { i.read(rb) } catch (_: Exception) { -1 }
             if (n <= 0) break
@@ -209,7 +200,7 @@ class Tun2Socks(
         val plen = payload?.size ?: 0; val total = 40 + plen
         val pkt = ByteArray(total)
         pkt[0] = 0x45; pkt[2] = (total ushr 8).toByte(); pkt[3] = total.toByte()
-        pkt[6] = 0x40; pkt[8] = 65; pkt[9] = 6
+        pkt[6] = 0x40; pkt[8] = 64; pkt[9] = 6
         Utils.writeInt(pkt, 12, c.dstIp); Utils.writeInt(pkt, 16, c.srcIp)
         val t = 20
         pkt[t] = (c.dstPort ushr 8).toByte(); pkt[t+1] = c.dstPort.toByte()
@@ -222,7 +213,7 @@ class Tun2Socks(
         pkt[10] = (ipCk ushr 8).toByte(); pkt[11] = ipCk.toByte()
         val tcpCk = Utils.tcpChecksum(c.dstIp, c.srcIp, pkt, t, 20 + plen)
         pkt[t+16] = (tcpCk ushr 8).toByte(); pkt[t+17] = tcpCk.toByte()
-        try { tunOut.write(pkt); tunOut.flush() } catch (_: Exception) {}
+        try { tunOut.write(pkt) } catch (_: Exception) {}
     }
 
     private fun handleUdp(buf: ByteArray, len: Int, ihl: Int) {
@@ -251,20 +242,7 @@ class Tun2Socks(
 
         val relay = ensureUdpRelay() ?: return
         val key = UdpKey(srcIp, srcPort, dstIp, dstPort)
-        val now = System.currentTimeMillis()
-        udpNat[key] = now
-
-        // [스마트 라우팅] 목적지 IP와 포트를 기억 (게임 서버로 간주)
-        val targetKey = "${Utils.ipStr(Utils.intToBytes(dstIp), 0)}:$dstPort"
-        smartGameTargets[targetKey] = now
-
-        // [FEC] 패킷 백업 (최근 1초간의 패킷만 캐싱)
-        fecCache[targetKey] = Pair(payload, now)
-        if (fecCache.size > 100) {
-            val expire = now - 30000
-            fecCache.entries.removeIf { it.value.second < expire }
-        }
-
+        udpNat[key] = System.currentTimeMillis()
         relay.send(dstIp, dstPort, payload)
     }
 
@@ -276,12 +254,10 @@ class Tun2Socks(
                 relay.setResponseHandler { srcHost, srcPort, payload ->
                     val now = System.currentTimeMillis()
                     var bestKey: UdpKey? = null; var bestTime = 0L
-                    // 1차: IP와 포트가 정확히 일치하는 타겟 찾기
                     for ((k, t) in udpNat) {
                         val dstHost = Utils.ipStr(Utils.intToBytes(k.dstIp), 0)
                         if (dstHost == srcHost && k.dstPort == srcPort && t > bestTime) { bestKey = k; bestTime = t }
                     }
-                    // 2차: 포트만 일치하거나, 가장 최근에 통신한 UDP 세션으로 폴백 (게임 서버 포트 변동 대응)
                     if (bestKey == null) {
                         for ((k, t) in udpNat) {
                             if (k.dstPort == srcPort && t > bestTime) { bestKey = k; bestTime = t }
@@ -289,12 +265,12 @@ class Tun2Socks(
                     }
                     if (bestKey == null) {
                         for ((k, t) in udpNat) {
-                            if (t > bestTime && (now - t) < 60000) { bestKey = k; bestTime = t }
+                            if (t > bestTime) { bestKey = k; bestTime = t }
                         }
                     }
                     val k = bestKey ?: return@setResponseHandler
                     val pkt = buildUdpToTun(k.srcIp, k.srcPort, k.dstIp, k.dstPort, payload)
-                    try { tunOut.write(pkt); tunOut.flush() } catch (_: Exception) {}
+                    try { tunOut.write(pkt) } catch (_: Exception) {}
                     udpNat[k] = now
                 }
                 udpRelay = relay
@@ -306,7 +282,7 @@ class Tun2Socks(
         val total = 20 + 8 + payload.size
         val pkt = ByteArray(total)
         pkt[0] = 0x45; pkt[2] = (total ushr 8).toByte(); pkt[3] = total.toByte()
-        pkt[8] = 65; pkt[9] = 17
+        pkt[8] = 64; pkt[9] = 17
         Utils.writeInt(pkt, 12, dstIp); Utils.writeInt(pkt, 16, srcIp)
         val u = 20
         pkt[u] = (dstPort ushr 8).toByte(); pkt[u+1] = dstPort.toByte()
@@ -355,7 +331,7 @@ class Tun2Socks(
             if (relayAddr!!.isAnyLocalAddress) relayAddr = InetAddress.getByName(host)
             relayPort = ((r3[8].toInt() and 0xFF) shl 8) or (r3[9].toInt() and 0xFF)
             udp = DatagramSocket()
-            try { udp!!.sendBufferSize = 65536; udp!!.receiveBufferSize = 65536 } catch (_: Exception) {}
+            try { udp!!.sendBufferSize = 262144; udp!!.receiveBufferSize = 262144 } catch (_: Exception) {}
             if (n != null) { try { n.bindSocket(udp!!) } catch (_: Exception) { MyVpnService.protectSocket(udp!!) } }
             else MyVpnService.protectSocket(udp!!)
             alive = true
@@ -373,7 +349,7 @@ class Tun2Socks(
         }
 
         private fun recvLoop() {
-            val buf = ByteArray(65535) // UDP 버퍼 최대치
+            val buf = ByteArray(65535)
             while (alive) {
                 try {
                     val p = DatagramPacket(buf, buf.size); udp?.receive(p)
@@ -390,11 +366,7 @@ class Tun2Socks(
                     }
                     val srcPort = ((data[off].toInt() and 0xFF) shl 8) or (data[off+1].toInt() and 0xFF)
                     val payload = data.copyOfRange(off + 2, data.size)
-                    
-                    // [스마트 라우팅] 게임 서버 응답인 경우 로그/추적 (필요 시 여기서 우선순위 처리)
-                    val targetKey = "$srcHost:$srcPort"
-                    
-                    try { responseHandler?.invoke(srcHost, srcPort, payload) } catch (_: Exception) {}
+                    responseHandler?.invoke(srcHost, srcPort, payload)
                 } catch (_: Exception) { if (!alive) break }
             }
         }
