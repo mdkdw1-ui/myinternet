@@ -6,21 +6,26 @@ import java.io.FileOutputStream
 
 object HevTunnelManager {
     @Volatile private var running = false
+    @Volatile var lastError: String? = null
     private var process: Process? = null
 
     fun start(context: Context, tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
+        lastError = null
         if (running) return true
         return try {
-            // 1. APK 내부의 lib 폴더에서 바이너리 위치 찾기
-            val nativeLibDir = context.applicationInfo.nativeLibraryDir
-            val libFile = File(nativeLibDir, "libhev-socks5-tunnel.so")
-            
-            if (!libFile.exists()) {
-                android.util.Log.e("HevTunnel", "Library not found in $nativeLibDir")
-                return false
+            val binaryFile = File(context.filesDir, "hev-socks5-tunnel")
+            if (!binaryFile.exists()) {
+                try {
+                    context.assets.open("hev-socks5-tunnel").use { input ->
+                        FileOutputStream(binaryFile).use { output -> input.copyTo(output) }
+                    }
+                    binaryFile.setExecutable(true)
+                } catch (e: Exception) {
+                    lastError = "바이너리 추출 실패: ${e.message}"
+                    return false
+                }
             }
 
-            // 2. 설정 파일 생성
             val configFile = File(cacheDir, "hev_config.yml")
             val yaml = """
                 tunnel:
@@ -40,14 +45,12 @@ object HevTunnelManager {
             """.trimIndent()
             FileOutputStream(configFile).use { it.write(yaml.toByteArray()) }
 
-            // 3. 실행 파일 실행 (TUN FD는 현재 넘기지 않음. 단순 실행 테스트)
-            // 실제로는 --tun-fd 옵션을 넘겨야 하지만, 일단 실행 가능 여부만 확인
-            val cmd = arrayOf(libFile.absolutePath, "-c", configFile.absolutePath)
+            val cmd = arrayOf(binaryFile.absolutePath, "-c", configFile.absolutePath)
             process = Runtime.getRuntime().exec(cmd)
             running = true
             true
         } catch (e: Exception) {
-            e.printStackTrace()
+            lastError = "실행 오류: ${e.javaClass.simpleName} - ${e.message}"
             false
         }
     }

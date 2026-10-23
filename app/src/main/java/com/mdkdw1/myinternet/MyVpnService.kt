@@ -85,9 +85,12 @@ class MyVpnService : VpnService() {
             
             val started = HevTunnelManager.start(this, pfd.fd, host, port, user, pass, cacheDir)
             if (!started) {
-                lastError = "hev-socks5-tunnel 시작 실패"
+                lastError = HevTunnelManager.lastError ?: "hev-socks5-tunnel 시작 실패"
+                android.widget.Toast.makeText(this, lastError, android.widget.Toast.LENGTH_LONG).show()
                 try { pfd.close() } catch (_: Exception) {}
-                tun = null; isRunning = false; stopSelf(); return
+                tun = null; isRunning = false
+                if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf(); return
             }
             isRunning = true
         } catch (e: Exception) {
