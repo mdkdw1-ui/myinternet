@@ -16,17 +16,24 @@ object HevTunnelManager {
         val binaryFile = File(context.filesDir, "hev-socks5-tunnel")
         if (!binaryFile.exists()) {
             try {
-                // assets 폴더의 파일 목록 확인
-                val assetList = context.assets.list("")?.joinToString(", ") ?: "비어있음"
                 context.assets.open("hev-socks5-tunnel").use { input ->
                     FileOutputStream(binaryFile).use { output -> input.copyTo(output) }
                 }
-                binaryFile.setExecutable(true)
+                // 실행 권한 강제 부여
+                binaryFile.setExecutable(true, false)
+                val chmod = Runtime.getRuntime().exec(arrayOf("chmod", "755", binaryFile.absolutePath))
+                chmod.waitFor()
             } catch (e: Exception) {
                 val assetList = try { context.assets.list("")?.joinToString(", ") ?: "비어있음" } catch (_: Exception) { "확인불가" }
-                lastError = "바이너리 추출 실패: ${e.message}\n\n[assets 폴더 내용]\n$assetList"
+                lastError = "바이너리 추출 실패: ${e.javaClass.simpleName} - ${e.message}\n\n[assets 내용]\n$assetList"
                 return false
             }
+        }
+
+        // 파일 검증
+        if (!binaryFile.canExecute()) {
+            lastError = "파일은 있지만 실행 권한 없음. (파일 크기: ${binaryFile.length()} bytes)"
+            return false
         }
 
         return try {

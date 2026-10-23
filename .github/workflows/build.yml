@@ -36,26 +36,19 @@ jobs:
           echo "new_name=$NEW_NAME" >> $GITHUB_OUTPUT
           echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
 
-      - name: Download and extract hev-socks5-tunnel AAR
+      - name: Download hev-socks5-tunnel binary to assets
         run: |
           mkdir -p app/src/main/assets
-          mkdir -p app/src/main/jniLibs/arm64-v8a
+          # GitHub Release에서 리눅스 ARM64 바이너리 다운로드
+          curl -L -o app/src/main/assets/hev-socks5-tunnel \
+            https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-linux-arm64
           
-          # AAR 다운로드 (GitHub Release 자산)
-          curl -L -o hev.aar https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-2.14.4.tar.xz
-          
-          # AAR이 아니라 tar.xz이므로 압축 해제
-          tar -xf hev.aar
-          
-          # 컴파일된 바이너리가 있는지 확인
-          find . -name "hev-socks5-tunnel*" -type f
-          
-          # AAR이 아니라 tar.xz이므로 직접 빌드된 바이너리가 없을 수 있음
-          # 대신 prebuilt binary 다운로드
-          curl -L -o app/src/main/assets/hev-socks5-tunnel https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-linux-arm64
-          chmod +x app/src/main/assets/hev-socks5-tunnel
-          
+          # 다운로드된 파일 확인 (크기가 100KB 이상인지)
           ls -la app/src/main/assets/
+          file app/src/main/assets/hev-socks5-tunnel
+          
+          # 실행 권한 부여 (APK에 포함될 때 권한은 무시되지만, 빌드 확인용)
+          chmod +x app/src/main/assets/hev-socks5-tunnel
       - name: Build Debug APK
         run: |
             gradle assembleDebug --no-daemon --stacktrace \
