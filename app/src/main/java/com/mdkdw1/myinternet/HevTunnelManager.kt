@@ -1,52 +1,57 @@
 package com.mdkdw1.myinternet
 
+import android.util.Log
 import java.io.File
-import java.io.FileOutputStream
 
 object HevTunnelManager {
+    private const val TAG = "HevTunnel"
     @Volatile private var running = false
     @Volatile var lastError: String? = null
+    @Volatile private var libLoaded = false
 
     init {
         try {
             System.loadLibrary("hev-socks5-tunnel")
+            libLoaded = true
+            Log.i(TAG, "libhev-socks5-tunnel loaded")
         } catch (e: Throwable) {
             lastError = "라이브러리 로드 실패: ${e.javaClass.simpleName} - ${e.message}"
-            e.printStackTrace()
+            Log.e(TAG, "loadLibrary failed", e)
         }
     }
 
+    fun isLibLoaded(): Boolean = libLoaded
+
     fun start(tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
-        if (lastError != null && !running) return false
+        if (!libLoaded) { lastError = lastError ?: "libhev-socks5-tunnel 미로드"; return false }
         if (running) return true
+        lastError = null
         return try {
             val configFile = File(cacheDir, "hev_config.yml")
             val yaml = """
                 tunnel:
                   mtu: 1350
-                  ipv4: 198.18.0.1
                 socks5:
-                  port: $srvPort
-                  address: $srvHost
-                  udp: udp
+                  proxy:
+                    address: $srvHost
+                    port: $srvPort
+                    udp: 'udp'
                   username: $user
                   password: $pass
                 misc:
                   task-stack-size: 86016
-                  tcp-buffer-size: 65536
                   connect-timeout: 10000
                   log-level: warn
             """.trimIndent()
-            FileOutputStream(configFile).use { it.write(yaml.toByteArray()) }
+            configFile.writeText(yaml)
+            Log.i(TAG, "TProxyStartService cfg=${configFile.absolutePath} fd=$tunFd host=$srvHost:$srvPort")
 
-            // void 반환: 예외가 없으면 성공
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
             running = true
-            configFile.delete()
             true
         } catch (e: Throwable) {
             lastError = "JNI 호출 실패: ${e.javaClass.simpleName} - ${e.message}"
-            e.printStackTrace()
+            Log.e(TAG, "TProxyStartService failed", e)
             false
         }
     }

@@ -5,8 +5,6 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import java.io.FileInputStream
-import java.io.FileOutputStream
 
 class MyVpnService : VpnService() {
     companion object {
@@ -43,9 +41,8 @@ class MyVpnService : VpnService() {
     }
 
     private fun startVpn() {
-        try {
-            startVpnInternal()
-        } catch (e: Throwable) {
+        try { startVpnInternal() }
+        catch (e: Throwable) {
             lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
             e.printStackTrace()
             try { stopVpn() } catch (_: Exception) {}
@@ -56,37 +53,43 @@ class MyVpnService : VpnService() {
     private fun startVpnInternal() {
         if (isRunning) return
         lastError = null
+
+        if (!HevTunnelManager.isLibLoaded()) {
+            lastError = "hev-socks5-tunnel 라이브러리 미탑재"
+            stopSelf(); return
+        }
+
         val s = SettingsManager(this)
         val host = s.srvHost; val port = s.srvPort
         val user = s.srvUser; val pass = s.srvPass
         if (host.isBlank() || user.isBlank() || pass.isBlank()) {
             lastError = "서버 정보가 비어 있습니다"; stopSelf(); return
         }
+
+        val underlying = LocalHotspotManager.hotspotNetwork
+        if (underlying == null) {
+            lastError = "핫스팟 네트워크 미준비"
+            stopSelf(); return
+        }
+
         try {
             startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 중"))
             val builder = Builder()
             builder.setSession("MyInternet")
             builder.addAddress("10.0.0.2", 32)
-            // UDP 패킷이 VPN을 완벽히 통과하도록 0.0.0.0 라우팅
             builder.addRoute("0.0.0.0", 0)
-            // IPv6 라우팅 차단 (게임 UDP 지연 방지)
             builder.addAddress("fd00::1", 128)
-            
-            LocalHotspotManager.hotspotNetwork?.let { builder.setUnderlyingNetworks(arrayOf(it)) }
-            
-            // 게임 서버 DNS 응답을 위해 여러 DNS 등록
-            builder.addDnsServer("8.8.8.8")
+            builder.setUnderlyingNetworks(arrayOf(underlying))
             builder.addDnsServer("1.1.1.1")
-            builder.setMtu(1500)
-            
+            builder.setMtu(1350)
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
+
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
-            
+
             val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
             if (!started) {
-                lastError = HevTunnelManager.lastError ?: "hev-socks5-tunnel 시작 실패"
-                android.widget.Toast.makeText(this, lastError, android.widget.Toast.LENGTH_LONG).show()
+                lastError = HevTunnelManager.lastError ?: "hev 시작 실패"
                 try { pfd.close() } catch (_: Exception) {}
                 tun = null; isRunning = false
                 if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
@@ -109,9 +112,7 @@ class MyVpnService : VpnService() {
         else @Suppress("DEPRECATION") stopForeground(true)
     }
 
-    override fun onDestroy() {
-        stopVpn(); instance = null; super.onDestroy()
-    }
+    override fun onDestroy() { stopVpn(); instance = null; super.onDestroy() }
 
     private fun buildNotification(text: String): Notification {
         val stopIntent = Intent(this, MyVpnService::class.java).apply { action = ACTION_STOP }

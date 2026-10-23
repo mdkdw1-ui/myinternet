@@ -47,8 +47,11 @@ jobs:
             NDK_OUT=./obj
           cd ..
           mkdir -p app/src/main/jniLibs/arm64-v8a
-          cp hev-src/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/ || true
-          ls -la app/src/main/jniLibs/arm64-v8a/ || true
+          cp hev-src/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/
+          echo "=== jniLibs after ndk-build ==="
+          ls -la app/src/main/jniLibs/arm64-v8a/
+          test -f app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so || (echo "❌ libhev-socks5-tunnel.so 없음"; exit 1)
+          echo "✅ .so 확인됨"
 
       - name: Bump version from latest tag
         id: bump

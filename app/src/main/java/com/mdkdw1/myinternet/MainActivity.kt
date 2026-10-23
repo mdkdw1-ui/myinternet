@@ -241,14 +241,18 @@ class MainActivity : AppCompatActivity() {
                 val pw = parts[1]
                 val qrIp = parts.getOrNull(2)
                 clientStatusText.text = "핫스팟 연결 중: $ssid"
+                localHotspot?.cancelPending()
                 localHotspot?.connectToHotspot(ssid, pw, object : LocalHotspotManager.HotspotCallback {
                     override fun onHotspotStarted(ssid: String, password: String) {}
-                    override fun onHotspotFailed(reason: String) { clientStatusText.text = "연결 실패: $reason" }
+                    override fun onHotspotFailed(reason: String) {
+                        clientStatusText.text = "연결 실패: $reason"
+                        toast("핫스팟 실패: $reason")
+                    }
                     override fun onClientConnected() {
-                        val serverIp = qrIp ?: getGatewayIp() ?: "192.168.43.1"
+                        val serverIp = getGatewayIp() ?: qrIp ?: "192.168.43.1"
                         clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
                         applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
-                        handler.postDelayed({ requestVpn() }, 1000)
+                        handler.postDelayed({ requestVpn() }, 800)
                     }
                     override fun onClientDisconnected() { clientStatusText.text = "연결 끊김" }
                 })
@@ -256,7 +260,8 @@ class MainActivity : AppCompatActivity() {
         } else {
             val parts = text.trim().split(":")
             if (parts.size < 2) return
-            applyClientConfig(parts[0], parts.getOrNull(1)?.toIntOrNull() ?: 1080, parts.getOrNull(2) ?: "myinternet", parts.getOrNull(3) ?: "myinternet")
+            applyClientConfig(parts[0], parts.getOrNull(1)?.toIntOrNull() ?: 1080,
+                parts.getOrNull(2) ?: "myinternet", parts.getOrNull(3) ?: "myinternet")
             toast("IP 설정 완료. VPN 연결...")
             handler.postDelayed({ requestVpn() }, 500)
         }
