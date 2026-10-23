@@ -24,7 +24,6 @@ class MyVpnService : VpnService() {
     }
 
     private var tun: ParcelFileDescriptor? = null
-    private var tun2socks: Tun2Socks? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -73,10 +72,12 @@ class MyVpnService : VpnService() {
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
             
-            val inStream = FileInputStream(pfd.fileDescriptor)
-            val outStream = FileOutputStream(pfd.fileDescriptor)
-            tun2socks = Tun2Socks(inStream, outStream, host, port, user, pass)
-            tun2socks?.start()
+            val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
+            if (!started) {
+                lastError = "hev-socks5-tunnel 시작 실패"
+                try { pfd.close() } catch (_: Exception) {}
+                tun = null; isRunning = false; stopSelf(); return
+            }
             isRunning = true
         } catch (e: Exception) {
             lastError = e.message
@@ -87,7 +88,7 @@ class MyVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        tun2socks?.stop(); tun2socks = null
+        HevTunnelManager.stop()
         try { tun?.close() } catch (_: Exception) {}
         tun = null; isRunning = false
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
