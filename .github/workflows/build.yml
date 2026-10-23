@@ -36,12 +36,33 @@ jobs:
           echo "new_name=$NEW_NAME" >> $GITHUB_OUTPUT
           echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
 
-      - name: List hev-socks5-tunnel release assets
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build hev-socks5-tunnel from source (NDK)
         run: |
-          echo "=== Release 2.14.4 자산 목록 ==="
-          gh release view 2.14.4 -R heiher/hev-socks5-tunnel
+          # 1. 소스 다운로드 및 압축 해제
+          curl -L -o hev.tar.xz https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-2.14.4.tar.xz
+          tar -xf hev.tar.xz
+          mv hev-socks5-tunnel-2.14.4 hev-src
+          
+          # 2. CMake를 이용한 안드로이드 크로스 컴파일
+          # (GitHub Actions의 ubuntu-latest 러너에는 Android NDK가 미리 설치되어 있습니다)
+          cd hev-src
+          mkdir build && cd build
+          
+          # arm64-v8a 빌드 (최신 폰 대부분 지원)
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_LATEST_HOME/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-24 \
+            -DCMAKE_BUILD_TYPE=Release
+          make -j$(nproc)
+          
+          # 3. 빌드된 .so 파일을 프로젝트에 복사
+          cd ../..
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp hev-src/build/libhev-socks5-tunnel.so app/src/main/jniLibs/arm64-v8a/ || true
+          # 만약 실행 파일 형태라면 (tun2socks)
+          cp hev-src/build/hev-socks5-tunnel app/src/main/jniLibs/arm64-v8a/ || true
+          ls -la app/src/main/jniLibs/arm64-v8a/
       - name: Build Debug APK
         run: |
             gradle assembleDebug --no-daemon --stacktrace \
