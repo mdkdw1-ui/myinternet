@@ -130,6 +130,14 @@ class MainActivity : AppCompatActivity() {
         root.addView(title("업데이트"))
         root.addView(Button(this).apply { text = "업데이트 확인"; setOnClickListener { checkUpdate() } })
 
+        root.addView(title("디버그"))
+        root.addView(Button(this).apply {
+            text = "📜 앱 로그 보기 (크래시 원인 확인)"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, LogcatActivity::class.java))
+            }
+        })
+
         setContentView(scroll)
     }
 
