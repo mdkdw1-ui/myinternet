@@ -7,11 +7,6 @@ object HevTunnelManager {
     @Volatile private var running = false
     @Volatile var lastError: String? = null
 
-    // JNI 함수 선언 (C 라이브러리와 시그니처가 정확히 일치해야 함)
-    external fun TProxyStartService(configPath: String, fd: Int): Boolean
-    external fun TProxyStopService()
-    external fun TProxyGetStats(): LongArray?
-
     init {
         try {
             System.loadLibrary("hev-socks5-tunnel")
@@ -44,12 +39,13 @@ object HevTunnelManager {
             """.trimIndent()
             FileOutputStream(configFile).use { it.write(yaml.toByteArray()) }
 
-            val result = TProxyStartService(configFile.absolutePath, tunFd)
+            // C 라이브러리가 기대하는 클래스의 JNI 함수 호출
+            val result = hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
             if (result) {
                 running = true
                 configFile.delete()
             } else {
-                lastError = "TProxyStartService가 false 반환"
+                lastError = "TProxyStartService false 반환"
             }
             result
         } catch (e: Throwable) {
@@ -60,7 +56,7 @@ object HevTunnelManager {
 
     fun stop() {
         if (!running) return
-        try { TProxyStopService() } catch (_: Exception) {}
+        try { hev.htproxy.TProxyService.TProxyStopService() } catch (_: Exception) {}
         running = false
     }
 
