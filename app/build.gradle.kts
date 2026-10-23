@@ -22,7 +22,7 @@ dependencies {
 }
 
 android {
-    ndkVersion "25.2.9519653"
+    ndkVersion = "25.2.9519653"
 
     packaging {
         jniLibs.useLegacyPackaging = true
