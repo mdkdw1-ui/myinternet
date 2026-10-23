@@ -25,7 +25,7 @@ class Socks5Server(
         thread(name = "socks5-accept") {
             try {
                 // 로컬 핫스팟을 포함한 모든 네트워크 인터페이스에서 접속 허용
-                serverSocket = ServerSocket(port, 50, java.net.InetAddress.getByName("0.0.0.0"))
+                serverSocket = ServerSocket(port, 50, InetAddress.getByName("0.0.0.0"))
                 while (running) {
                     val c = try { serverSocket?.accept() ?: break } catch (_: Exception) { break }
                     thread { handle(c) }
@@ -92,7 +92,6 @@ class Socks5Server(
         }
     }
 
-    // ---- TCP CONNECT ----
     private fun handleConnect(client: Socket, out: java.io.OutputStream, host: String, port: Int) {
         val remote = try { Socket(host, port) } catch (_: Exception) {
             out.write(byteArrayOf(0x05, 0x05, 0, 1, 0, 0, 0, 0, 0, 0)); return
@@ -104,12 +103,10 @@ class Socks5Server(
         try { remote.close() } catch (_: Exception) {}
     }
 
-    // ---- UDP ASSOCIATE ----
     private fun handleUdpAssociate(client: Socket, out: java.io.OutputStream) {
         val relay = DatagramSocket(0, InetAddress.getByName("0.0.0.0"))
         relay.soTimeout = 0
         val bndPort = relay.localPort
-        // BND.ADDR = 0.0.0.0, BND.PORT = relay port
         out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0,
             (bndPort ushr 8).toByte(), bndPort.toByte())); out.flush()
 
@@ -118,7 +115,6 @@ class Socks5Server(
         udpSessions[key] = session
         session.start()
 
-        // TCP 제어 연결이 유지되는 동안 대기; 끊기면 UDP 세션 종료
         try {
             val buf = ByteArray(1)
             while (running && client.getInputStream().read(buf) != -1) { /* idle */ }
@@ -153,7 +149,6 @@ class Socks5Server(
                 try {
                     val p = DatagramPacket(buf, buf.size)
                     relay.receive(p)
-                    // 첫 패킷에서 클라이언트 UDP 포트 학습
                     if (clientUdpPort == 0) clientUdpPort = p.port
                     val data = p.data.copyOfRange(p.offset, p.offset + p.length)
                     val (dstHost, dstPort, payload) = parseUdpHeader(data) ?: continue

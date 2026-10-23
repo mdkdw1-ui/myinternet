@@ -61,9 +61,8 @@ class MyVpnService : VpnService() {
             builder.addAddress("10.0.0.2", 32)
             builder.addRoute("0.0.0.0", 0)
             // IPv6 차단 (통신사 우회)
-            // VPN 내부 DNS를 실제 핫스팟 게이트웨이 IP(또는 서버 IP)로 지정
-            val gwIp = host // SettingsManager에서 읽어온 서버 IP 그대로 사용
-            builder.addDnsServer(gwIp)
+            // 로컬 핫스팟 환경에서는 시스템 DNS를 쓰지 않고, 앱 내부에서 DNS(UDP 53)를 처리하게 함
+            builder.setMtu(1400)
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd

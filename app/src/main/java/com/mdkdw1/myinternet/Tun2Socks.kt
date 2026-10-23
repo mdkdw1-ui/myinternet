@@ -188,6 +188,25 @@ class Tun2Socks(
         if (off >= len) return
         val payload = buf.copyOfRange(off, len)
 
+        // DNS(53번 포트)는 서버 프록시를 거치지 않고, 클라이언트 폰에서 직접 조회 (로컬 핫스팟 환경에서 필수)
+        if (dstPort == 53) {
+            thread {
+                try {
+                    val s = DatagramSocket()
+                    MyVpnService.protectSocket(s)
+                    s.soTimeout = 3000
+                    s.send(DatagramPacket(payload, payload.size, InetAddress.getByName(Utils.ipStr(Utils.intToBytes(dstIp), 0)), dstPort))
+                    val rbuf = ByteArray(4096)
+                    val rp = DatagramPacket(rbuf, rbuf.size)
+                    s.receive(rp)
+                    s.close()
+                    val pkt = buildUdpToTun(srcIp, srcPort, dstIp, dstPort, rbuf.copyOfRange(0, rp.length))
+                    try { tunOut.write(pkt) } catch (_: Exception) {}
+                } catch (_: Exception) {}
+            }
+            return
+        }
+
         val relay = ensureUdpRelay() ?: return
         val key = UdpKey(srcIp, srcPort, dstIp, dstPort)
         udpNat[key] = System.currentTimeMillis()
