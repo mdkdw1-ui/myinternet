@@ -45,8 +45,12 @@ class LocalHotspotManager(private val context: Context) {
                         else callback.onHotspotStarted(ssid, pw)
                     }
                 }
-                override fun onStopped() = Handler(Looper.getMainLooper()).post { callback.onHotspotFailed("핫스팟 중지됨") }
-                override fun onFailed(reason: Int) = Handler(Looper.getMainLooper()).post { callback.onHotspotFailed("핫스팟 시작 실패: $reason") }
+                override fun onStopped() {
+                    Handler(Looper.getMainLooper()).post { callback.onHotspotFailed("핫스팟 중지됨") }
+                }
+                override fun onFailed(reason: Int) {
+                    Handler(Looper.getMainLooper()).post { callback.onHotspotFailed("핫스팟 시작 실패: $reason") }
+                }
             }, Handler(Looper.getMainLooper()))
         } catch (e: Exception) { callback.onHotspotFailed("오류: ${e.message}") }
     }
