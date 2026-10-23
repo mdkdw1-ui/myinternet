@@ -29,11 +29,6 @@ jobs:
         uses: nttld/setup-ndk@v1
         with:
           ndk-version: r25c
-
-      - name: Setup Android NDK r25c
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r25c
           
       - name: Build hev-socks5-tunnel with ndk-build (NDK r25c)
         run: |
