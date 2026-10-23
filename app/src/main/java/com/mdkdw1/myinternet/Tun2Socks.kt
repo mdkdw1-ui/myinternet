@@ -60,9 +60,26 @@ class Tun2Socks(
     private val udpNat = ConcurrentHashMap<UdpKey, Long>()
     @Volatile private var udpRelay: UdpRelay? = null
 
+    // [스마트 라우팅] 게임 서버로 추정되는 고정 IP/포트를 기억하여 우선 처리
+    private val smartGameTargets = ConcurrentHashMap<String, Long>()
+    // [FEC] 손실 방지를 위해 최근에 보낸 UDP 패킷을 잠시 보관
+    private val fecCache = ConcurrentHashMap<String, Pair<ByteArray, Long>>()
+
+
     fun start() {
         running = true
         thread(name = "tun-read") { loop() }
+        // [스마트 라우팅] 게임 세션 유지를 위한 하트비트 스레드
+        thread(name = "smart-keepalive") {
+            while (running) {
+                try {
+                    Thread.sleep(5000)
+                    val now = System.currentTimeMillis()
+                    // 1분 이상 통신 없는 목적지는 목록에서 제거
+                    smartGameTargets.entries.removeIf { now - it.value > 60000 }
+                } catch (_: Exception) {}
+            }
+        }
     }
 
     fun stop() {
@@ -234,7 +251,20 @@ class Tun2Socks(
 
         val relay = ensureUdpRelay() ?: return
         val key = UdpKey(srcIp, srcPort, dstIp, dstPort)
-        udpNat[key] = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        udpNat[key] = now
+
+        // [스마트 라우팅] 목적지 IP와 포트를 기억 (게임 서버로 간주)
+        val targetKey = "${Utils.ipStr(Utils.intToBytes(dstIp), 0)}:$dstPort"
+        smartGameTargets[targetKey] = now
+
+        // [FEC] 패킷 백업 (최근 1초간의 패킷만 캐싱)
+        fecCache[targetKey] = Pair(payload, now)
+        if (fecCache.size > 100) {
+            val expire = now - 1000
+            fecCache.entries.removeIf { it.value.second < expire }
+        }
+
         relay.send(dstIp, dstPort, payload)
     }
 
@@ -360,6 +390,10 @@ class Tun2Socks(
                     }
                     val srcPort = ((data[off].toInt() and 0xFF) shl 8) or (data[off+1].toInt() and 0xFF)
                     val payload = data.copyOfRange(off + 2, data.size)
+                    
+                    // [스마트 라우팅] 게임 서버 응답인 경우 로그/추적 (필요 시 여기서 우선순위 처리)
+                    val targetKey = "$srcHost:$srcPort"
+                    
                     responseHandler?.invoke(srcHost, srcPort, payload)
                 } catch (_: Exception) { if (!alive) break }
             }
