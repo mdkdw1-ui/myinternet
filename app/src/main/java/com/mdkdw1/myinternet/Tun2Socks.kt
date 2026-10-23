@@ -219,7 +219,7 @@ class Tun2Socks(
         if (dstPort == 53) {
             threadPool.execute {
                 try {
-                    val s = openSocks(dstIp, 53) ?: return@thread
+                    val s = openSocks(dstIp, 53) ?: return@execute
                     s.soTimeout = 5000
                     val o = s.getOutputStream(); val i = DataInputStream(s.getInputStream())
                     o.write(byteArrayOf((payload.size ushr 8).toByte(), payload.size.toByte()) + payload); o.flush()
