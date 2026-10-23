@@ -38,10 +38,6 @@ object HevTunnelManager {
                     udp: 'udp'
                   username: $user
                   password: $pass
-                misc:
-                  task-stack-size: 86016
-                  connect-timeout: 10000
-                  log-level: warn
             """.trimIndent()
             configFile.writeText(yaml)
             Log.i(TAG, "TProxyStartService cfg=${configFile.absolutePath} fd=$tunFd host=$srvHost:$srvPort")

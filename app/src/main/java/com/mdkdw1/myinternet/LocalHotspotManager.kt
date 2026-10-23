@@ -77,7 +77,7 @@ class LocalHotspotManager(private val context: Context) {
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 hotspotNetwork = network
-                try { connectivityManager.bindProcessToNetwork(network) } catch (_: Exception) {}
+                // bindProcessToNetwork 제거: VPN setUnderlyingNetworks와 충돌
                 Handler(Looper.getMainLooper()).post { activeCb?.onClientConnected() }
             }
             override fun onUnavailable() {
@@ -86,7 +86,6 @@ class LocalHotspotManager(private val context: Context) {
             }
             override fun onLost(network: Network) {
                 if (hotspotNetwork == network) hotspotNetwork = null
-                try { connectivityManager.bindProcessToNetwork(null) } catch (_: Exception) {}
                 Handler(Looper.getMainLooper()).post { activeCb?.onClientDisconnected() }
             }
         }

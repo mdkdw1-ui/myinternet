@@ -96,6 +96,7 @@ class MyVpnService : VpnService() {
                 stopSelf(); return
             }
             isRunning = true
+            android.util.Log.i("MyVpn", "VPN running; hev started; underlying=${underlying}")
         } catch (e: Exception) {
             lastError = e.message
             try { tun?.close() } catch (_: Exception) {}
