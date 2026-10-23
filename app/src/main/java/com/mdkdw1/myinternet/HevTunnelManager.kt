@@ -39,17 +39,14 @@ object HevTunnelManager {
             """.trimIndent()
             FileOutputStream(configFile).use { it.write(yaml.toByteArray()) }
 
-            // C 라이브러리가 기대하는 클래스의 JNI 함수 호출
-            val result = hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
-            if (result) {
-                running = true
-                configFile.delete()
-            } else {
-                lastError = "TProxyStartService false 반환"
-            }
-            result
+            // void 반환: 예외가 없으면 성공
+            hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
+            running = true
+            configFile.delete()
+            true
         } catch (e: Throwable) {
             lastError = "JNI 호출 실패: ${e.javaClass.simpleName} - ${e.message}"
+            e.printStackTrace()
             false
         }
     }
