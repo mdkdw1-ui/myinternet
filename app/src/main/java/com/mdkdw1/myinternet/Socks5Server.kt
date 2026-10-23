@@ -1,5 +1,7 @@
 package com.mdkdw1.myinternet
 
+import java.io.DataInputStream
+import java.io.OutputStream
 import java.net.*
 import java.util.concurrent.*
 import java.util.concurrent.atomic.*
@@ -24,8 +26,10 @@ class Socks5Server(
         running = true
         thread(name = "socks5-accept") {
             try {
-                // 로컬 핫스팟을 포함한 모든 네트워크 인터페이스에서 접속 허용
-                serverSocket = ServerSocket(port, 50, InetAddress.getByName("0.0.0.0"))
+                serverSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(port), 50)   // 모든 인터페이스(로컬 핫스팟 포함)
+                }
                 while (running) {
                     val c = try { serverSocket?.accept() ?: break } catch (_: Exception) { break }
                     thread { handle(c) }
@@ -48,36 +52,38 @@ class Socks5Server(
         activeSockets.add(s); totalConnections.incrementAndGet()
         var authenticated = false
         try {
-            val i = s.getInputStream(); val o = s.getOutputStream()
-            if (i.read() != 0x05) return
-            val n = i.read(); val m = ByteArray(n); i.read(m)
+            s.tcpNoDelay = true
+            s.soTimeout = 15000                       // 핸드셰이크 구간만 타임아웃
+            val i = DataInputStream(s.getInputStream()); val o = s.getOutputStream()
+
+            if (i.readUnsignedByte() != 0x05) return
+            val n = i.readUnsignedByte(); val m = ByteArray(n); i.readFully(m)
             if (!m.contains(0x02.toByte())) { o.write(byteArrayOf(0x05, 0xFF.toByte())); return }
             o.write(byteArrayOf(0x05, 0x02)); o.flush()
 
-            if (i.read() != 0x01) return
-            val ul = i.read(); val un = ByteArray(ul); i.read(un)
-            val pl = i.read(); val pw = ByteArray(pl); i.read(pw)
+            if (i.readUnsignedByte() != 0x01) return
+            val un = ByteArray(i.readUnsignedByte()); i.readFully(un)
+            val pw = ByteArray(i.readUnsignedByte()); i.readFully(pw)
             if (String(un) != username || String(pw) != password) {
                 o.write(byteArrayOf(0x01, 0x01)); return
             }
             o.write(byteArrayOf(0x01, 0x00)); o.flush()
             authenticated = true; activeConnections.incrementAndGet()
 
-            if (i.read() != 0x05) return
-            val cmd = i.read(); i.read()
-            val atyp = i.read()
-            val host: String; val dstPort: Int
-            when (atyp) {
-                0x01 -> { val b = ByteArray(4); i.read(b)
-                    host = InetAddress.getByAddress(b).hostAddress ?: return
-                    dstPort = (i.read() shl 8) or i.read() }
-                0x03 -> { val l = i.read(); val b = ByteArray(l); i.read(b)
-                    host = String(b); dstPort = (i.read() shl 8) or i.read() }
-                0x04 -> { val b = ByteArray(16); i.read(b)
-                    host = InetAddress.getByAddress(b).hostAddress ?: return
-                    dstPort = (i.read() shl 8) or i.read() }
+            if (i.readUnsignedByte() != 0x05) return
+            val cmd = i.readUnsignedByte(); i.readUnsignedByte()
+            val host: String
+            when (i.readUnsignedByte()) {
+                0x01 -> { val b = ByteArray(4); i.readFully(b)
+                    host = InetAddress.getByAddress(b).hostAddress ?: return }
+                0x03 -> { val b = ByteArray(i.readUnsignedByte()); i.readFully(b)
+                    host = String(b) }
+                0x04 -> { val b = ByteArray(16); i.readFully(b)
+                    host = InetAddress.getByAddress(b).hostAddress ?: return }
                 else -> return
             }
+            val dstPort = i.readUnsignedShort()
+            s.soTimeout = 0
 
             when (cmd) {
                 0x01 -> handleConnect(s, o, host, dstPort)
@@ -92,23 +98,34 @@ class Socks5Server(
         }
     }
 
-    private fun handleConnect(client: Socket, out: java.io.OutputStream, host: String, port: Int) {
-        val remote = try { Socket(host, port) } catch (_: Exception) {
+    private fun handleConnect(client: Socket, out: OutputStream, host: String, port: Int) {
+        val remote = Socket()
+        try {
+            remote.tcpNoDelay = true                  // 게임 소패킷 지연 방지
+            remote.connect(InetSocketAddress(host, port), 10000)
+        } catch (_: Exception) {
+            try { remote.close() } catch (_: Exception) {}
             out.write(byteArrayOf(0x05, 0x05, 0, 1, 0, 0, 0, 0, 0, 0)); return
         }
         activeSockets.add(remote)
-        out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0)); out.flush()
-        val t = thread { pipe(client, remote) }
-        pipe(remote, client); t.join()
-        try { remote.close() } catch (_: Exception) {}
+        try {
+            out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0)); out.flush()
+            val t = thread { pipe(client, remote) }
+            pipe(remote, client); t.join()
+        } finally {
+            activeSockets.remove(remote)
+            try { remote.close() } catch (_: Exception) {}
+        }
     }
 
-    private fun handleUdpAssociate(client: Socket, out: java.io.OutputStream) {
+    private fun handleUdpAssociate(client: Socket, out: OutputStream) {
         val relay = DatagramSocket(0, InetAddress.getByName("0.0.0.0"))
         relay.soTimeout = 0
         val bndPort = relay.localPort
-        out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0,
-            (bndPort ushr 8).toByte(), bndPort.toByte())); out.flush()
+        // BND.ADDR = 클라이언트가 접속한 서버 IP (0.0.0.0 을 주면 클라이언트가 자기 자신으로 보내버림)
+        val bnd = client.localAddress.address.takeIf { it.size == 4 } ?: ByteArray(4)
+        out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01) + bnd +
+            byteArrayOf((bndPort ushr 8).toByte(), bndPort.toByte())); out.flush()
 
         val session = UdpRelaySession(relay, client)
         val key = "${client.inetAddress.hostAddress}:${client.port}"
@@ -117,7 +134,7 @@ class Socks5Server(
 
         try {
             val buf = ByteArray(1)
-            while (running && client.getInputStream().read(buf) != -1) { /* idle */ }
+            while (running && client.getInputStream().read(buf) != -1) { /* 제어 연결 유지 */ }
         } catch (_: Exception) {}
         session.close()
         udpSessions.remove(key)
@@ -128,82 +145,96 @@ class Socks5Server(
         private val client: Socket
     ) {
         @Volatile private var running = true
-        private val upstreamMap = ConcurrentHashMap<String, DatagramSocket>()
         private val clientAddr: InetAddress = client.inetAddress
-        private var clientUdpPort: Int = 0
+        @Volatile private var clientUdpPort = 0
+        private val upstream = DatagramSocket()
+        private val resolved = ConcurrentHashMap<String, InetAddress>()
+
+        init {
+            try {
+                upstream.receiveBufferSize = 262144; upstream.sendBufferSize = 262144
+                relay.receiveBufferSize = 262144; relay.sendBufferSize = 262144
+            } catch (_: Exception) {}
+        }
 
         fun start() {
-            thread(name = "udp-relay-${relay.localPort}") { relayLoop() }
+            thread(name = "udp-client-${relay.localPort}") { clientLoop() }
+            thread(name = "udp-upstream-${relay.localPort}") { upstreamLoop() }
         }
 
         fun close() {
             running = false
             try { relay.close() } catch (_: Exception) {}
-            upstreamMap.values.forEach { try { it.close() } catch (_: Exception) {} }
-            upstreamMap.clear()
+            try { upstream.close() } catch (_: Exception) {}
         }
 
-        private fun relayLoop() {
+        // 클라이언트 → 인터넷
+        private fun clientLoop() {
             val buf = ByteArray(65535)
+            val p = DatagramPacket(buf, buf.size)
             while (running) {
                 try {
-                    val p = DatagramPacket(buf, buf.size)
+                    p.length = buf.size
                     relay.receive(p)
-                    if (clientUdpPort == 0) clientUdpPort = p.port
-                    val data = p.data.copyOfRange(p.offset, p.offset + p.length)
-                    val (dstHost, dstPort, payload) = parseUdpHeader(data) ?: continue
-
-                    val up = upstreamMap.getOrPut("$dstHost:$dstPort") {
-                        DatagramSocket().also { it.soTimeout = 0 }
-                    }
-                    up.send(DatagramPacket(payload, payload.size,
-                        InetAddress.getByName(dstHost), dstPort))
-
-                    thread {
-                        try {
-                            val rbuf = ByteArray(65535)
-                            val rp = DatagramPacket(rbuf, rbuf.size)
-                            up.receive(rp)
-                            val respPayload = rbuf.copyOfRange(0, rp.length)
-                            val header = buildUdpHeader(rp.address.hostAddress ?: dstHost, rp.port, respPayload.size)
-                            val out = header + respPayload
-                            relay.send(DatagramPacket(out, out.size, clientAddr, clientUdpPort))
-                        } catch (_: Exception) {}
-                    }
+                    if (p.address != clientAddr) continue
+                    clientUdpPort = p.port
+                    val (dst, dstPort, off) = parse(buf, p.length) ?: continue
+                    upstream.send(DatagramPacket(buf, off, p.length - off, dst, dstPort))
                 } catch (_: Exception) { if (!running) break }
             }
         }
 
-        private fun parseUdpHeader(data: ByteArray): Triple<String, Int, ByteArray>? {
-            if (data.size < 10) return null
-            val atyp = data[3].toInt() and 0xFF
-            var off = 4
-            val host: String
-            when (atyp) {
-                0x01 -> { if (data.size < 8) return null
-                    host = "${data[4].toInt() and 0xFF}.${data[5].toInt() and 0xFF}." +
-                           "${data[6].toInt() and 0xFF}.${data[7].toInt() and 0xFF}"
-                    off = 8 }
-                0x03 -> { val l = data[4].toInt() and 0xFF
-                    host = String(data, 5, l); off = 5 + l }
-                0x04 -> { if (data.size < 20) return null
-                    val b = data.copyOfRange(4, 20)
-                    host = InetAddress.getByAddress(b).hostAddress ?: return null
-                    off = 20 }
-                else -> return null
+        // 인터넷 → 클라이언트 (상시 수신)
+        private fun upstreamLoop() {
+            val buf = ByteArray(65535)
+            val p = DatagramPacket(buf, buf.size)
+            while (running) {
+                try {
+                    p.length = buf.size
+                    upstream.receive(p)
+                    val port = clientUdpPort
+                    if (port == 0) continue
+                    val header = buildUdpHeader(p.address, p.port)
+                    val out = ByteArray(header.size + p.length)
+                    System.arraycopy(header, 0, out, 0, header.size)
+                    System.arraycopy(buf, 0, out, header.size, p.length)
+                    relay.send(DatagramPacket(out, out.size, clientAddr, port))
+                } catch (_: Exception) { if (!running) break }
             }
-            if (data.size < off + 2) return null
-            val port = ((data[off].toInt() and 0xFF) shl 8) or (data[off+1].toInt() and 0xFF)
-            val payload = data.copyOfRange(off + 2, data.size)
-            return Triple(host, port, payload)
         }
 
-        private fun buildUdpHeader(host: String, port: Int, len: Int): ByteArray {
-            val ip = InetAddress.getByName(host).address
-            val h = ByteArray(4 + 4 + 2)
-            h[3] = 0x01
-            System.arraycopy(ip, 0, h, 4, 4)
-            h[8] = (port ushr 8).toByte(); h[9] = port.toByte()
+        // 반환: (목적지 주소, 포트, 페이로드 시작 오프셋)
+        private fun parse(d: ByteArray, len: Int): Triple<InetAddress, Int, Int>? {
+            if (len < 10) return null
+            val addr: InetAddress
+            val off: Int
+            when (d[3].toInt() and 0xFF) {
+                0x01 -> { addr = InetAddress.getByAddress(d.copyOfRange(4, 8)); off = 8 }
+                0x03 -> {
+                    val l = d[4].toInt() and 0xFF
+                    if (len < 5 + l + 2) return null
+                    val name = String(d, 5, l)
+                    addr = resolved.getOrPut(name) { InetAddress.getByName(name) }
+                    off = 5 + l
+                }
+                0x04 -> {
+                    if (len < 22) return null
+                    addr = InetAddress.getByAddress(d.copyOfRange(4, 20)); off = 20
+                }
+                else -> return null
+            }
+            if (len < off + 2) return null
+            val port = ((d[off].toInt() and 0xFF) shl 8) or (d[off + 1].toInt() and 0xFF)
+            return Triple(addr, port, off + 2)
+        }
+
+        private fun buildUdpHeader(addr: InetAddress, port: Int): ByteArray {
+            val ip = addr.address
+            val h = ByteArray(4 + ip.size + 2)
+            h[3] = (if (ip.size == 4) 0x01 else 0x04).toByte()
+            System.arraycopy(ip, 0, h, 4, ip.size)
+            h[4 + ip.size] = (port ushr 8).toByte()
+            h[5 + ip.size] = port.toByte()
             return h
         }
     }
@@ -211,9 +242,12 @@ class Socks5Server(
     private fun pipe(from: Socket, to: Socket) {
         try {
             val a = from.getInputStream(); val b = to.getOutputStream()
-            val buf = ByteArray(8192)
-            while (running) { val r = a.read(buf); if (r < 0) break; b.write(buf, 0, r); b.flush()
-                bytesTransferred.addAndGet(r.toLong()) }
+            val buf = ByteArray(16384)
+            while (running) {
+                val r = a.read(buf); if (r < 0) break
+                b.write(buf, 0, r); b.flush()
+                bytesTransferred.addAndGet(r.toLong())
+            }
         } catch (_: Exception) {}
         try { to.shutdownOutput() } catch (_: Exception) {}
     }

@@ -67,7 +67,7 @@ class MyVpnService : VpnService() {
             // 게임 서버 DNS 응답을 위해 여러 DNS 등록
             builder.addDnsServer("8.8.8.8")
             builder.addDnsServer("1.1.1.1")
-            builder.setMtu(1350)
+            builder.setMtu(1500)
             
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
