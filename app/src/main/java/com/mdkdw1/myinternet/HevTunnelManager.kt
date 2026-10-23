@@ -12,20 +12,24 @@ object HevTunnelManager {
     fun start(context: Context, tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
         lastError = null
         if (running) return true
-        return try {
-            val binaryFile = File(context.filesDir, "hev-socks5-tunnel")
-            if (!binaryFile.exists()) {
-                try {
-                    context.assets.open("hev-socks5-tunnel").use { input ->
-                        FileOutputStream(binaryFile).use { output -> input.copyTo(output) }
-                    }
-                    binaryFile.setExecutable(true)
-                } catch (e: Exception) {
-                    lastError = "바이너리 추출 실패: ${e.message}"
-                    return false
-                }
-            }
 
+        val binaryFile = File(context.filesDir, "hev-socks5-tunnel")
+        if (!binaryFile.exists()) {
+            try {
+                // assets 폴더의 파일 목록 확인
+                val assetList = context.assets.list("")?.joinToString(", ") ?: "비어있음"
+                context.assets.open("hev-socks5-tunnel").use { input ->
+                    FileOutputStream(binaryFile).use { output -> input.copyTo(output) }
+                }
+                binaryFile.setExecutable(true)
+            } catch (e: Exception) {
+                val assetList = try { context.assets.list("")?.joinToString(", ") ?: "비어있음" } catch (_: Exception) { "확인불가" }
+                lastError = "바이너리 추출 실패: ${e.message}\n\n[assets 폴더 내용]\n$assetList"
+                return false
+            }
+        }
+
+        return try {
             val configFile = File(cacheDir, "hev_config.yml")
             val yaml = """
                 tunnel:
