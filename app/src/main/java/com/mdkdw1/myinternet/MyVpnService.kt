@@ -60,7 +60,8 @@ class MyVpnService : VpnService() {
             builder.addRoute("0.0.0.0", 0)
             LocalHotspotManager.hotspotNetwork?.let { builder.setUnderlyingNetworks(arrayOf(it)) }
             builder.addDnsServer("8.8.8.8")
-            builder.setMtu(1400)
+            builder.addDnsServer("1.1.1.1")
+            builder.setMtu(1350)
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd

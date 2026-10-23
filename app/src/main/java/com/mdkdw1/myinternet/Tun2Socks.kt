@@ -150,7 +150,7 @@ class Tun2Socks(
         try {
             try { sock.sendBufferSize = 65536; sock.receiveBufferSize = 65536 } catch (_: Exception) {}
             bind(sock)
-            sock.connect(InetSocketAddress(srvHost, srvPort), 10000)
+            sock.connect(InetSocketAddress(srvHost, srvPort), 20000)
             sock.soTimeout = 10000
             val i = DataInputStream(sock.getInputStream()); val o = sock.getOutputStream()
             o.write(byteArrayOf(5, 1, 2)); o.flush()
