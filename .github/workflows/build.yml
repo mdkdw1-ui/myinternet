@@ -36,6 +36,21 @@ jobs:
           echo "new_name=$NEW_NAME" >> $GITHUB_OUTPUT
           echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
 
+      - name: Inject AAR dependency
+        run: |
+          python3 -c "
+          p = 'app/build.gradle.kts'
+          s = open(p).read()
+          if 'hev-socks5-tunnel.aar' not in s:
+              s = s.replace('dependencies {', 'dependencies {\n    implementation(files(\"libs/hev-socks5-tunnel.aar\"))')
+              open(p, 'w').write(s)
+          "
+      - name: Download hev-socks5-tunnel AAR
+        run: |
+          mkdir -p app/libs
+          curl -L -o app/libs/hev-socks5-tunnel.aar \
+            https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel.aar
+          ls -la app/libs/
       - name: Build Debug APK
         run: |
             gradle assembleDebug --no-daemon --stacktrace \
