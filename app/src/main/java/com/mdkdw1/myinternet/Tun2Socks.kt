@@ -246,9 +246,21 @@ class Tun2Socks(
                 relay.setResponseHandler { srcHost, srcPort, payload ->
                     val now = System.currentTimeMillis()
                     var bestKey: UdpKey? = null; var bestTime = 0L
+                    // 1차: IP와 포트가 정확히 일치하는 타겟 찾기
                     for ((k, t) in udpNat) {
                         val dstHost = Utils.ipStr(Utils.intToBytes(k.dstIp), 0)
                         if (dstHost == srcHost && k.dstPort == srcPort && t > bestTime) { bestKey = k; bestTime = t }
+                    }
+                    // 2차: 포트만 일치하거나, 가장 최근에 통신한 UDP 세션으로 폴백 (게임 서버 포트 변동 대응)
+                    if (bestKey == null) {
+                        for ((k, t) in udpNat) {
+                            if (k.dstPort == srcPort && t > bestTime) { bestKey = k; bestTime = t }
+                        }
+                    }
+                    if (bestKey == null) {
+                        for ((k, t) in udpNat) {
+                            if (t > bestTime) { bestKey = k; bestTime = t }
+                        }
                     }
                     val k = bestKey ?: return@setResponseHandler
                     val pkt = buildUdpToTun(k.srcIp, k.srcPort, k.dstIp, k.dstPort, payload)
@@ -331,7 +343,7 @@ class Tun2Socks(
         }
 
         private fun recvLoop() {
-            val buf = ByteArray(65535)
+            val buf = ByteArray(65535) // UDP 버퍼 최대치
             while (alive) {
                 try {
                     val p = DatagramPacket(buf, buf.size); udp?.receive(p)
