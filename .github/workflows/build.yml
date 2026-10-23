@@ -37,10 +37,13 @@ jobs:
           echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
 
       - name: Prepare hev-socks5-tunnel from AAR
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p app/libs/hev
           cd app/libs/hev
-          curl -L -o aar.zip https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel.aar
+          # gh CLI를 사용해 안정적으로 Release Asset 다운로드
+          gh release download 2.14.4 -R heiher/hev-socks5-tunnel -p "*.aar" -O aar.zip
           unzip -o aar.zip
           ls -la
           cd ../../..
