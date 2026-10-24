@@ -253,27 +253,10 @@ class MainActivity : AppCompatActivity() {
                         clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
                         applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
                         
-                        // [수정] 서버 포트(1080)가 열려있는지 확인 후 VPN 시작
-                        clientStatusText.text = "서버 포트 확인 중..."
-                        Thread {
-                            var reachable = false
-                            try {
-                                val socket = java.net.Socket()
-                                socket.connect(java.net.InetSocketAddress(serverIp, 1080), 5000) // 5초 대기
-                                socket.close()
-                                reachable = true
-                            } catch (e: Exception) {}
-                            
-                            runOnUiThread {
-                                if (reachable) {
-                                    clientStatusText.text = "✅ 서버 접속 성공. VPN 연결..."
-                                    handler.postDelayed({ requestVpn() }, 500)
-                                } else {
-                                    clientStatusText.text = "❌ 서버(1080) 접속 실패. 서버 폰의 앱이 켜져 있는지 확인하세요."
-                                    toast("서버 포트(1080)가 막혀있습니다.")
-                                }
-                            }
-                        }.start()
+                        // [수정] 안드로이드 OS가 '인터넷 없음'으로 판단하여 통신을 막는 것을 우회하기 위해
+                        // 포트 검사 없이 즉시 VPN을 켭니다. VPN이 켜지면 OS가 이 와이파이를 통로로 인정합니다.
+                        clientStatusText.text = "✅ 핫스팟 연결됨. VPN 강제 연결 중..."
+                        handler.postDelayed({ requestVpn() }, 500)
                     }
                     override fun onClientDisconnected() { clientStatusText.text = "연결 끊김" }
                 })

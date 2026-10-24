@@ -78,6 +78,7 @@ class MyVpnService : VpnService() {
             val builder = Builder()
             builder.setSession("MyInternet")
             builder.addAddress("10.0.0.2", 32)
+            // 모든 트래픽을 VPN으로 강제
             builder.addRoute("0.0.0.0", 0)
             builder.addAddress("fd00::1", 128)
             
