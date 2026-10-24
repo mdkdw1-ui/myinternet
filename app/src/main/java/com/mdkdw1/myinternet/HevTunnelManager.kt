@@ -14,7 +14,7 @@ object HevTunnelManager {
         try {
             System.loadLibrary("hev-socks5-tunnel")
             libLoaded = true
-            Log.i(TAG, "libhev-socks5-tunnel loaded successfully")
+            Log.i(TAG, "lib loaded")
         } catch (e: Throwable) {
             lastError = "라이브러리 로드 실패: ${e.message}"
             Log.e(TAG, "loadLibrary failed", e)
@@ -30,45 +30,40 @@ object HevTunnelManager {
 
         try {
             val configFile = File(cacheDir, "hev_config.yml")
-            
-            // 줄바꿈을 배열로 명확하게 명시
-            val lines = arrayOf(
-                "tunnel:",
-                "  mtu: 8500",
-                "socks5:",
-                "  port: $srvPort",
-                "  address: $srvHost",
-                "  udp: udp",
-                "  username: $user",
-                "  password: $pass"
-            )
-            
-            // 파일에 직접 바이트 단위로 쓰기
+            val content = "tunnel:\n  mtu: 8500\nsocks5:\n  port: $srvPort\n  address: $srvHost\n  udp: udp\n  username: $user\n  password: $pass\n"
+            val bytes = content.toByteArray(Charsets.UTF_8)
+
+            Log.i(TAG, "=========== HEV CONFIG WRITE START ===========")
+            Log.i(TAG, "content_length=${bytes.size} bytes")
+            Log.i(TAG, "content_string=<$content>")
+
             FileOutputStream(configFile).use { fos ->
-                for (line in lines) {
-                    fos.write(line.toByteArray(Charsets.UTF_8))
-                    fos.write('\n'.code)
-                }
+                fos.write(bytes)
                 fos.flush()
             }
-            
-            // 파일 내용 다시 읽어서 로그 덤프
-            val actual = configFile.readText()
-            Log.i(TAG, "===== HEV CONFIG START =====")
-            Log.i(TAG, "path=${configFile.absolutePath} size=${configFile.length()}B")
-            for (l in actual.split("\n")) {
-                Log.i(TAG, "  | $l")
+
+            Log.i(TAG, "written_size=${configFile.length()} bytes")
+
+            val written = configFile.readBytes()
+            val sb = StringBuilder()
+            for (b in written) {
+                val c = b.toInt() and 0xFF
+                if (c in 0x20..0x7E) sb.append(c.toChar())
+                else if (c == 0x0A) sb.append("\\n")
+                else sb.append("\\x").append(String.format("%02x", c))
             }
-            Log.i(TAG, "===== HEV CONFIG END =====")
-            Log.i(TAG, "tunFd=$tunFd  →  TProxyStartService 직전")
-            
+            Log.i(TAG, "HEXDUMP=<${sb.toString()}>")
+            Log.i(TAG, "=========== HEV CONFIG WRITE END ===========")
+
+            Log.i(TAG, ">>> TProxyStartService CALL (fd=$tunFd, path=${configFile.absolutePath})")
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
-            Log.i(TAG, "TProxyStartService 정상 리턴")
+            Log.i(TAG, "<<< TProxyStartService RETURNED")
+
             running = true
             return true
         } catch (e: Throwable) {
             lastError = "Hev 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
-            Log.e(TAG, "예외 발생!", e)
+            Log.e(TAG, "EXCEPTION", e)
             return false
         }
     }
