@@ -86,6 +86,7 @@ class Socks5Server(
 
     private fun handle(s: Socket) {
         activeSockets.add(s); totalConnections.incrementAndGet()
+        android.util.Log.i("Socks5Server", "클라이언트 접속: ${s.inetAddress.hostAddress}:${s.port}")
         var authenticated = false
         try {
             s.tcpNoDelay = true
@@ -132,10 +133,12 @@ class Socks5Server(
     }
 
     private fun handleConnect(client: Socket, out: OutputStream, host: String, port: Int) {
+        android.util.Log.i("Socks5Server", "CONNECT 요청: $host:$port")
         val remote = Socket()
         try {
             remote.tcpNoDelay = true
             remote.connect(InetSocketAddress(host, port), 10000)
+            android.util.Log.i("Socks5Server", "CONNECT 성공: $host:$port")
         } catch (_: Exception) {
             try { remote.close() } catch (_: Exception) {}
             out.write(byteArrayOf(0x05, 0x05, 0, 1, 0, 0, 0, 0, 0, 0)); return
@@ -152,6 +155,7 @@ class Socks5Server(
     }
 
     private fun handleUdpAssociate(client: Socket, out: OutputStream) {
+        android.util.Log.i("Socks5Server", "UDP 요청 수신 (게임 데이터용)")
         val relay = DatagramSocket(0, InetAddress.getByName("0.0.0.0"))
         relay.soTimeout = 0
         val bndPort = relay.localPort

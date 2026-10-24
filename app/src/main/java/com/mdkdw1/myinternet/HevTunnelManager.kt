@@ -5,11 +5,12 @@ import java.io.File
 
 object HevTunnelManager {
     private const val TAG = "HevTunnel"
-    const val MTU = 1350 // VPN과 hev 설정 통일
-
     @Volatile private var running = false
     @Volatile var lastError: String? = null
     @Volatile private var libLoaded = false
+    
+    // MTU 설정
+    private const val MTU = 1350
 
     init {
         try {
@@ -31,15 +32,15 @@ object HevTunnelManager {
         
         return try {
             val configFile = File(cacheDir, "hev_config.yml")
-            // 메일에서 지적된 올바른 스키마 적용
+            
+            // 💡 정상적인 hev 2.14.4 스키마 (들여쓰기와 줄바꿈 100% 보장)
             val yaml = """
                 tunnel:
                   mtu: $MTU
-                  ipv4: 198.18.0.1
                 socks5:
                   port: $srvPort
                   address: $srvHost
-                  udp: 'udp'
+                  udp: udp
                   username: $user
                   password: $pass
                 misc:
@@ -48,9 +49,10 @@ object HevTunnelManager {
                   tcp-buffer-size: 131072
                   udp-buffer-size: 131072
             """.trimIndent()
-            configFile.writeText(yaml)
             
-            Log.i(TAG, "TProxyStartService 시작 (cfg=${configFile.absolutePath}, fd=$tunFd, host=$srvHost:$srvPort)")
+            configFile.writeText(yaml)
+            Log.i(TAG, "TProxyStartService 시작 준비 (host=$srvHost:$srvPort)")
+            Log.d(TAG, "YAML 설정:\n$yaml")
             
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
             
