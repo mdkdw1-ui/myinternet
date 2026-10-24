@@ -2,6 +2,7 @@ package com.mdkdw1.myinternet
 
 import android.util.Log
 import java.io.File
+import java.io.FileOutputStream
 
 object HevTunnelManager {
     private const val TAG = "HevTunnel"
@@ -30,34 +31,39 @@ object HevTunnelManager {
         try {
             val configFile = File(cacheDir, "hev_config.yml")
             
-            // MTU 8500 (hev 2.14.4 표준값)
-            val yaml = "tunnel:\n" +
-                       "  mtu: 8500\n" +
-                       "socks5:\n" +
-                       "  port: $srvPort\n" +
-                       "  address: $srvHost\n" +
-                       "  udp: udp\n" +
-                       "  username: $user\n" +
-                       "  password: $pass\n"
+            // 줄바꿈을 배열로 명확하게 명시
+            val lines = arrayOf(
+                "tunnel:",
+                "  mtu: 8500",
+                "socks5:",
+                "  port: $srvPort",
+                "  address: $srvHost",
+                "  udp: udp",
+                "  username: $user",
+                "  password: $pass"
+            )
             
-            configFile.writeText(yaml)
+            // 파일에 직접 바이트 단위로 쓰기
+            FileOutputStream(configFile).use { fos ->
+                for (line in lines) {
+                    fos.write(line.toByteArray(Charsets.UTF_8))
+                    fos.write('\n'.code)
+                }
+                fos.flush()
+            }
             
-            // 파일 내용을 다시 읽어서 로그에 남김 (실제로 어떻게 쓰였는지 확인)
-            val actual = try { configFile.readText() } catch (e: Exception) { "읽기 실패: ${e.message}" }
+            // 파일 내용 다시 읽어서 로그 덤프
+            val actual = configFile.readText()
+            Log.i(TAG, "===== HEV CONFIG START =====")
+            Log.i(TAG, "path=${configFile.absolutePath} size=${configFile.length()}B")
+            for (l in actual.split("\n")) {
+                Log.i(TAG, "  | $l")
+            }
+            Log.i(TAG, "===== HEV CONFIG END =====")
+            Log.i(TAG, "tunFd=$tunFd  →  TProxyStartService 직전")
             
-            Log.i(TAG, "===== HEV CONFIG =====")
-            Log.i(TAG, "path=${configFile.absolutePath}")
-            Log.i(TAG, "size=${configFile.length()} bytes")
-            Log.i(TAG, "actual_content_begin")
-            actual.split("\n").forEach { line -> Log.i(TAG, "  | $line") }
-            Log.i(TAG, "actual_content_end")
-            Log.i(TAG, "tunFd=$tunFd")
-            
-            // JNI 호출 전 로그
-            Log.i(TAG, ">>> TProxyStartService 호출 직전")
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
-            Log.i(TAG, "<<< TProxyStartService 호출 완료")
-            
+            Log.i(TAG, "TProxyStartService 정상 리턴")
             running = true
             return true
         } catch (e: Throwable) {
