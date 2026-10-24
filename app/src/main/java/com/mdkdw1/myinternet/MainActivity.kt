@@ -249,7 +249,7 @@ class MainActivity : AppCompatActivity() {
                         toast("핫스팟 실패: $reason")
                     }
                     override fun onClientConnected() {
-                        val serverIp = getGatewayIp() ?: qrIp ?: "192.168.43.1"
+                        val serverIp = findRealGatewayIp() ?: getGatewayIp() ?: qrIp ?: "192.168.43.1"
                         clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
                         applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
                         handler.postDelayed({ requestVpn() }, 800)
@@ -314,6 +314,49 @@ class MainActivity : AppCompatActivity() {
         settings.srvPort = portInput.text.toString().toIntOrNull() ?: 1080
         settings.srvUser = userInput.text.toString().ifBlank { "myinternet" }
         settings.srvPass = passInput.text.toString().ifBlank { "myinternet" }
+    }
+
+    private fun findRealGatewayIp(): String? {
+        try {
+            // 1. ARP 테이블에서 10.x.x.1 또는 192.168.x.1 형태 찾기
+            val process = Runtime.getRuntime().exec("ip neigh")
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
+            var line: String? = reader.readLine()
+            while (line != null) {
+                if (line.contains("REACHABLE") || line.contains("STALE")) {
+                    val parts = line.split(" ")
+                    if (parts.isNotEmpty()) {
+                        val ip = parts[0]
+                        if ((ip.startsWith("10.") || ip.startsWith("192.168.")) && ip.endsWith(".1")) {
+                            return ip
+                        }
+                    }
+                }
+                line = reader.readLine()
+            }
+            reader.close()
+        } catch (_: Exception) {}
+
+        try {
+            // 2. 네트워크 인터페이스에서 게이트웨이 유추
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
+            for (intf in interfaces) {
+                if (intf.isUp && !intf.isLoopback && (intf.name.contains("wlan") || intf.name.contains("ap"))) {
+                    for (addr in intf.inetAddresses.toList()) {
+                        if (addr is java.net.Inet4Address) {
+                            val ip = addr.hostAddress
+                            if (ip != null && (ip.startsWith("10.") || ip.startsWith("192.168."))) {
+                                // IP의 마지막 자리를 .1로 변경 (예: 10.204.228.226 -> 10.204.228.1)
+                                val prefix = ip.substringBeforeLast(".")
+                                return "$prefix.1"
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        return null
     }
 
     private fun requestVpn() {
