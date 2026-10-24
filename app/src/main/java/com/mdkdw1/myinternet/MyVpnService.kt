@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.util.Log
 
 class MyVpnService : VpnService() {
     companion object {
@@ -16,9 +17,6 @@ class MyVpnService : VpnService() {
         @Volatile var isRunning = false
         @Volatile var lastError: String? = null
         @Volatile var instance: MyVpnService? = null
-
-        fun protectSocket(s: java.net.Socket) { try { instance?.protect(s) } catch (_: Exception) {} }
-        fun protectSocket(s: java.net.DatagramSocket) { try { instance?.protect(s) } catch (_: Exception) {} }
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -76,9 +74,21 @@ class MyVpnService : VpnService() {
             startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 중"))
             val builder = Builder()
             builder.setSession("MyInternet")
+            
+            // 1. VPN 가상 IP 및 기본 라우팅
             builder.addAddress("10.0.0.2", 32)
             builder.addRoute("0.0.0.0", 0)
             builder.addAddress("fd00::1", 128)
+            
+            // 2. 핵심: SOCKS 서버(10.204.228.225)로 가는 트래픽은 VPN을 타지 않도록 우회!
+            try {
+                val serverIp = java.net.InetAddress.getByName(host).hostAddress
+                if (serverIp != null && !serverIp.contains(":")) {
+                    builder.addRoute(serverIp, 32)
+                    Log.i("MyVpn", "Bypassed VPN for SOCKS server: $serverIp")
+                }
+            } catch (_: Exception) {}
+
             builder.setUnderlyingNetworks(arrayOf(underlying))
             builder.addDnsServer("1.1.1.1")
             builder.setMtu(1350)
@@ -95,8 +105,9 @@ class MyVpnService : VpnService() {
                 if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(); return
             }
+            
             isRunning = true
-            android.util.Log.i("MyVpn", "VPN running; hev started; underlying=${underlying}")
+            Log.i("MyVpn", "VPN running; hev started; underlying=$underlying")
         } catch (e: Exception) {
             lastError = e.message
             try { tun?.close() } catch (_: Exception) {}
