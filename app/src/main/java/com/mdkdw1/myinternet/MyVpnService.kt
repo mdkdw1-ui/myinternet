@@ -109,7 +109,7 @@ class MyVpnService : VpnService() {
 
             builder.setUnderlyingNetworks(arrayOf(underlying))
             // [수정] DNS 는 hev mapdns 주소로 지정 (UDP DNS 를 SOCKS5 로 프록시)
-            builder.addDnsServer("198.18.0.2")
+            builder.addDnsServer("1.1.1.1")
             builder.setMtu(1500)
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
 

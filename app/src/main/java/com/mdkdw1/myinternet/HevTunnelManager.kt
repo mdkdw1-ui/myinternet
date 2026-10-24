@@ -41,14 +41,9 @@ object HevTunnelManager {
                           "  udp: 'udp'\n" +
                           "  username: $user\n" +
                           "  password: $pass\n" +
-                          "mapdns:\n" +
-                          "  address: 198.18.0.2\n" +
-                          "  port: 53\n" +
-                          "  network: 240.0.0.0\n" +
-                          "  netmask: 240.0.0.0\n" +
-                          "  cache-size: 10000\n" +
                           "misc:\n" +
-                          "  log-level: debug\n"
+                          "  log-level: info\n" +
+                          "  task-stack-size: 86016\n"
             val bytes = content.toByteArray(Charsets.UTF_8)
 
             Log.i(TAG, "=========== HEV CONFIG WRITE START ===========")
@@ -72,10 +67,10 @@ object HevTunnelManager {
             watchdog.isDaemon = true
             watchdog.start()
 
+            Log.i(TAG, ">>> TProxyStartService CALLING ...")
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
-            watchdog.interrupt()
-
             Log.i(TAG, "<<< TProxyStartService RETURNED")
+            watchdog.interrupt()
             running = true
             return true
         } catch (e: Throwable) {
