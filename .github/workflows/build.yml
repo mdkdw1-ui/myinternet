@@ -53,6 +53,15 @@ jobs:
           test -f app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so || (echo "❌ libhev-socks5-tunnel.so 없음"; exit 1)
           echo "✅ .so 확인됨"
 
+      - name: Force clean build
+        run: |
+          rm -rf ~/.gradle
+          rm -rf .gradle
+          rm -rf app/build
+          echo "================="
+          echo "강제 클린 완료"
+          echo "================="
+
       - name: Bump version from latest tag
         id: bump
         run: |
@@ -66,9 +75,22 @@ jobs:
 
       - name: Build Debug APK
         run: |
-          gradle assembleDebug --no-daemon --stacktrace \
+          gradle clean assembleDebug --no-daemon --stacktrace \
             -PversionName=${{ steps.bump.outputs.new_name }} \
             -PversionCode=${{ steps.bump.outputs.new_code }}
+
+      - name: Verify Kotlin code in APK
+        run: |
+          APK=app/build/outputs/apk/debug/app-debug.apk
+          echo "=== APK 내 dex 에서 HevTunnelManager 문자열 검사 ==="
+          for f in $(unzip -Z1 "$APK" | grep -E '\.dex$'); do
+            unzip -p "$APK" "$f" | strings | grep -E "HEV CONFIG WRITE|HEV CONFIG START|hexdump" || true
+          done
+          if ! unzip -p "$APK" classes4.dex 2>/dev/null | strings | grep -q "HEV CONFIG WRITE"; then
+            echo "❌ APK에 최신 HevTunnelManager 코드가 없음 (캐시된 빌드)"
+            exit 1
+          fi
+          echo "✅ APK에 최신 코드 포함 확인"
 
       - name: Verify APK exists
         run: |
