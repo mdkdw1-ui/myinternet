@@ -32,12 +32,11 @@ object HevTunnelManager {
                 tunnel:
                   mtu: 1350
                 socks5:
-                  proxy:
-                    address: $srvHost
-                    port: $srvPort
-                    udp: 'udp'
-                  username: '$user'
-                  password: '$pass'
+                  port: $srvPort
+                  address: $srvHost
+                  udp: udp
+                  username: $user
+                  password: $pass
                 misc:
                   log-level: debug
             """.trimIndent()
