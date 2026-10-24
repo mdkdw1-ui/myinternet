@@ -2,13 +2,10 @@ package com.mdkdw1.myinternet
 
 import android.app.*
 import android.content.Intent
-import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
-import java.net.InetSocketAddress
-import java.net.Socket
 
 class MyVpnService : VpnService() {
     companion object {
@@ -16,7 +13,6 @@ class MyVpnService : VpnService() {
         const val NOTIFICATION_ID = 1002
         const val ACTION_START = "VPN_START"
         const val ACTION_STOP = "VPN_STOP"
-        private const val TAG = "MyVpn"
 
         @Volatile var isRunning = false
         @Volatile var lastError: String? = null
@@ -43,10 +39,14 @@ class MyVpnService : VpnService() {
     }
 
     private fun startVpn() {
-        try { startVpnInternal() }
-        catch (e: Throwable) {
+        // [핵심 수정 1] 안드로이드 시스템에 즉시 포그라운드 알림을 띄운다. (5초 제한 회피)
+        startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 준비 중..."))
+        
+        try {
+            startVpnInternal()
+        } catch (e: Throwable) {
             lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
-            Log.e(TAG, "Start error", e)
+            Log.e("MyVpn", "startVpn error", e)
             try { stopVpn() } catch (_: Exception) {}
             stopSelf()
         }
@@ -57,7 +57,7 @@ class MyVpnService : VpnService() {
         lastError = null
 
         if (!HevTunnelManager.isLibLoaded()) {
-            lastError = "hev-socks5-tunnel 라이브러리 미탑재"
+            lastError = "hev 라이브러리 미탑재"
             stopSelf(); return
         }
 
@@ -65,13 +65,7 @@ class MyVpnService : VpnService() {
         val host = s.srvHost; val port = s.srvPort
         val user = s.srvUser; val pass = s.srvPass
         if (host.isBlank() || user.isBlank() || pass.isBlank()) {
-            lastError = "서버 정보가 비어 있습니다"; stopSelf(); return
-        }
-
-        // [추가] VPN을 켜기 전에 서버(핫스팟 망)로 소켓이 닿는지 먼저 테스트
-        if (!testServerConnection(host, port)) {
-            lastError = "SOCKS 서버 접속 불가 ($host:$port) - 서버 앱이 켜져 있는지 확인하세요"
-            stopSelf(); return
+            lastError = "서버 정보가 없습니다"; stopSelf(); return
         }
 
         val underlying = LocalHotspotManager.hotspotNetwork
@@ -81,34 +75,27 @@ class MyVpnService : VpnService() {
         }
 
         try {
-            startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 중"))
             val builder = Builder()
             builder.setSession("MyInternet")
-            
             builder.addAddress("10.0.0.2", 32)
             builder.addRoute("0.0.0.0", 0)
+            builder.addAddress("fd00::1", 128)
             
-            // [핵심 수정] addRoute(serverIp, 32) 대신, 우리 앱(hev) 자체를 VPN 터널에서 제외시킴!
-            // 이렇게 하면 hev가 SOCKS 서버로 연결할 때 VPN을 타지 않고 핫스팟 와이파이로 직접 나갑니다.
+            // 서버 IP 우회 라우팅 (무한 루프 방지)
             try {
-                builder.addDisallowedApplication(packageName)
-                Log.i(TAG, "VPN 우회 설정 완료: $packageName")
-            } catch (e: Exception) {
-                Log.w(TAG, "addDisallowedApplication 실패: ${e.message}")
-            }
+                val serverIp = java.net.InetAddress.getByName(host).hostAddress
+                if (serverIp != null && !serverIp.contains(":")) {
+                    builder.addRoute(serverIp, 32)
+                }
+            } catch (_: Exception) {}
 
             builder.setUnderlyingNetworks(arrayOf(underlying))
             builder.addDnsServer("1.1.1.1")
-            builder.setMtu(HevTunnelManager.MTU) // MTU 통일 (1350)
-            
+            builder.setMtu(1500)
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
 
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
-
-            // 로컬 바인딩을 위해 앱 프로세스를 핫스팟으로 바인딩
-            val cm = getSystemService(ConnectivityManager::class.java)
-            cm.bindProcessToNetwork(underlying)
 
             val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
             if (!started) {
@@ -118,8 +105,13 @@ class MyVpnService : VpnService() {
                 if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(); return
             }
+            
             isRunning = true
-            Log.i(TAG, "VPN running; hev started; underlying=$underlying")
+            // 알림 텍스트 업데이트
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.notify(NOTIFICATION_ID, buildNotification("VPN 연결됨 · $host:$port"))
+            Log.i("MyVpn", "VPN running; hev started; underlying=$underlying")
+            
         } catch (e: Exception) {
             lastError = e.message
             try { tun?.close() } catch (_: Exception) {}
@@ -128,23 +120,7 @@ class MyVpnService : VpnService() {
         }
     }
 
-    private fun testServerConnection(host: String, port: Int): Boolean {
-        return try {
-            val sock = Socket()
-            val n = LocalHotspotManager.hotspotNetwork
-            if (n != null) n.bindSocket(sock) else protect(sock)
-            sock.connect(InetSocketAddress(host, port), 3000)
-            sock.close()
-            true
-        } catch (e: Exception) {
-            Log.e(TAG, "사전 연결 테스트 실패: ${e.message}")
-            false
-        }
-    }
-
     private fun stopVpn() {
-        val cm = getSystemService(ConnectivityManager::class.java)
-        try { cm.bindProcessToNetwork(null) } catch (_: Exception) {}
         HevTunnelManager.stop()
         try { tun?.close() } catch (_: Exception) {}
         tun = null; isRunning = false
@@ -152,9 +128,7 @@ class MyVpnService : VpnService() {
         else @Suppress("DEPRECATION") stopForeground(true)
     }
 
-    override fun onDestroy() {
-        stopVpn(); instance = null; super.onDestroy()
-    }
+    override fun onDestroy() { stopVpn(); instance = null; super.onDestroy() }
 
     private fun buildNotification(text: String): Notification {
         val stopIntent = Intent(this, MyVpnService::class.java).apply { action = ACTION_STOP }
