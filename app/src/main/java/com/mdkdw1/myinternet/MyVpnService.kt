@@ -82,7 +82,7 @@ class MyVpnService : VpnService() {
             builder.addAddress("fd00::1", 128)
 
             // [수정] 0.0.0.0/0 전체 라우팅 제거.
-            // VPN 터널로 보낼 대역만 지정 (hev-socks5-tunnel이 내부에서 처리).
+            // VPN 터널로 보낼 대역만 지정 (Tun2Socks가 내부에서 처리).
             // 사설망(핫스팟)은 VPN을 타지 않도록 제외.
             // 198.18.0.0/15 는 hev의 가상 터널 대역 (mapdns/터널 주소와 충돌 방지용)
             builder.addRoute("0.0.0.0", 0)

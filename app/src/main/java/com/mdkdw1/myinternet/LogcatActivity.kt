@@ -51,7 +51,7 @@ class LogcatActivity : Activity() {
                 val sb = StringBuilder()
                 while (true) {
                     val line = reader.readLine() ?: break
-                    if (line.contains("myinternet") || line.contains("hev-socks5") || line.contains("AndroidRuntime") || line.contains("System.err")) {
+                    if (line.contains("myinternet") || line.contains("AndroidRuntime") || line.contains("System.err")) {
                         sb.append(line).append("\n")
                     }
                 }
