@@ -179,37 +179,62 @@ class Socks5Server(
         @Volatile private var running = true
         private val clientAddr: InetAddress = client.inetAddress
         @Volatile private var clientUdpPort = 0
-        private val upstream = DatagramSocket()
+        private val upstreamMap = ConcurrentHashMap<String, DatagramSocket>()
         private val resolved = ConcurrentHashMap<String, InetAddress>()
 
-        init { try { upstream.receiveBufferSize = 262144; upstream.sendBufferSize = 262144; relay.receiveBufferSize = 262144; relay.sendBufferSize = 262144 } catch (_: Exception) {} }
-
-        fun start() { thread(name = "udp-client-${relay.localPort}") { clientLoop() }; thread(name = "udp-upstream-${relay.localPort}") { upstreamLoop() } }
-        fun close() { running = false; try { relay.close() } catch (_: Exception) {}; try { upstream.close() } catch (_: Exception) {} }
-
-        private fun clientLoop() {
-            val buf = ByteArray(65535); val p = DatagramPacket(buf, buf.size)
-            while (running) {
-                try {
-                    p.length = buf.size; relay.receive(p)
-                    if (p.address != clientAddr) continue
-                    clientUdpPort = p.port
-                    val (dst, dstPort, off) = parse(buf, p.length) ?: continue
-                    upstream.send(DatagramPacket(buf, off, p.length - off, dst, dstPort))
-                } catch (_: Exception) { if (!running) break }
-            }
+        init {
+            try { relay.receiveBufferSize = 262144; relay.sendBufferSize = 262144 } catch (_: Exception) {}
         }
 
-        private fun upstreamLoop() {
-            val buf = ByteArray(65535); val p = DatagramPacket(buf, buf.size)
+        fun start() {
+            thread(name = "udp-client-${relay.localPort}") { clientLoop() }
+        }
+
+        fun close() {
+            running = false
+            try { relay.close() } catch (_: Exception) {}
+            upstreamMap.values.forEach { try { it.close() } catch (_: Exception) {} }
+            upstreamMap.clear()
+        }
+
+        private fun clientLoop() {
+            val buf = ByteArray(65535)
+            val p = DatagramPacket(buf, buf.size)
             while (running) {
                 try {
-                    p.length = buf.size; upstream.receive(p)
-                    val port = clientUdpPort; if (port == 0) continue
-                    val header = buildUdpHeader(p.address, p.port)
-                    val out = ByteArray(header.size + p.length)
-                    System.arraycopy(header, 0, out, 0, header.size); System.arraycopy(buf, 0, out, header.size, p.length)
-                    relay.send(DatagramPacket(out, out.size, clientAddr, port))
+                    p.length = buf.size
+                    relay.receive(p)
+                    if (p.address != clientAddr) continue
+                    clientUdpPort = p.port
+                    val parsed = parse(buf, p.length) ?: continue
+                    val dst = parsed.first; val dstPort = parsed.second; val off = parsed.third
+                    val key = "${dst.hostAddress}:$dstPort"
+                    val up = upstreamMap.getOrPut(key) {
+                        val s = DatagramSocket()
+                        try {
+                            s.sendBufferSize = 262144; s.receiveBufferSize = 262144
+                            s.soTimeout = 60000
+                        } catch (_: Exception) {}
+                        thread(name = "udp-recv-${relay.localPort}-$key") {
+                            val rbuf = ByteArray(65535)
+                            val rp = DatagramPacket(rbuf, rbuf.size)
+                            while (running) {
+                                try {
+                                    rp.length = rbuf.size
+                                    s.receive(rp)
+                                    val port = clientUdpPort
+                                    if (port == 0) continue
+                                    val header = buildUdpHeader(rp.address, rp.port)
+                                    val out = ByteArray(header.size + rp.length)
+                                    System.arraycopy(header, 0, out, 0, header.size)
+                                    System.arraycopy(rbuf, 0, out, header.size, rp.length)
+                                    relay.send(DatagramPacket(out, out.size, clientAddr, port))
+                                } catch (_: Exception) { if (!running) break }
+                            }
+                        }
+                        s
+                    }
+                    up.send(DatagramPacket(buf, off, p.length - off, dst, dstPort))
                 } catch (_: Exception) { if (!running) break }
             }
         }
@@ -219,7 +244,13 @@ class Socks5Server(
             val addr: InetAddress; val off: Int
             when (d[3].toInt() and 0xFF) {
                 0x01 -> { addr = InetAddress.getByAddress(d.copyOfRange(4, 8)); off = 8 }
-                0x03 -> { val l = d[4].toInt() and 0xFF; if (len < 5 + l + 2) return null; addr = resolved.getOrPut(String(d, 5, l)) { InetAddress.getByName(String(d, 5, l)) }; off = 5 + l }
+                0x03 -> {
+                    val l = d[4].toInt() and 0xFF
+                    if (len < 5 + l + 2) return null
+                    val name = String(d, 5, l)
+                    addr = resolved.getOrPut(name) { InetAddress.getByName(name) }
+                    off = 5 + l
+                }
                 0x04 -> { if (len < 22) return null; addr = InetAddress.getByAddress(d.copyOfRange(4, 20)); off = 20 }
                 else -> return null
             }
@@ -229,9 +260,13 @@ class Socks5Server(
         }
 
         private fun buildUdpHeader(addr: InetAddress, port: Int): ByteArray {
-            val ip = addr.address; val h = ByteArray(4 + ip.size + 2)
-            h[3] = (if (ip.size == 4) 0x01 else 0x04).toByte(); System.arraycopy(ip, 0, h, 4, ip.size)
-            h[4 + ip.size] = (port ushr 8).toByte(); h[5 + ip.size] = port.toByte(); return h
+            val ip = addr.address
+            val h = ByteArray(4 + ip.size + 2)
+            h[3] = (if (ip.size == 4) 0x01 else 0x04).toByte()
+            System.arraycopy(ip, 0, h, 4, ip.size)
+            h[4 + ip.size] = (port ushr 8).toByte()
+            h[5 + ip.size] = port.toByte()
+            return h
         }
     }
 

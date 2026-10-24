@@ -20,6 +20,7 @@ class MyVpnService : VpnService() {
     }
 
     private var tun: ParcelFileDescriptor? = null
+    private var tun2socks: Tun2Socks? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -55,11 +56,6 @@ class MyVpnService : VpnService() {
     private fun startVpnInternal() {
         if (isRunning) return
         lastError = null
-
-        if (!HevTunnelManager.isLibLoaded()) {
-            lastError = "hev 라이브러리 미탑재"
-            stopSelf(); return
-        }
 
         val s = SettingsManager(this)
         val host = s.srvHost; val port = s.srvPort
@@ -116,18 +112,12 @@ class MyVpnService : VpnService() {
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
 
-            Log.d("MyVpn", "Hev 시작 시도: host=$host, port=$port, fd=${pfd.fd}")
-            val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
-            if (!started) {
-                lastError = HevTunnelManager.lastError ?: "hev 시작 실패"
-                Log.e("MyVpn", "Hev 시작 실패: $lastError")
-                android.widget.Toast.makeText(this, "VPN 실패: $lastError", android.widget.Toast.LENGTH_LONG).show()
-                try { pfd.close() } catch (_: Exception) {}
-                tun = null; isRunning = false
-                if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
-                stopSelf(); return
-            }
-            Log.d("MyVpn", "Hev 시작 성공!")
+            Log.d("MyVpn", "Tun2Socks 시작: host=$host, port=$port")
+            val inStream = java.io.FileInputStream(pfd.fileDescriptor)
+            val outStream = java.io.FileOutputStream(pfd.fileDescriptor)
+            tun2socks = Tun2Socks(inStream, outStream, host, port, user, pass)
+            tun2socks?.start()
+            Log.d("MyVpn", "Tun2Socks 시작 완료")
             
             isRunning = true
             // 알림 텍스트 업데이트
@@ -144,7 +134,7 @@ class MyVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        HevTunnelManager.stop()
+        tun2socks?.stop(); tun2socks = null
         try { tun?.close() } catch (_: Exception) {}
         tun = null; isRunning = false
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
