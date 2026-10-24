@@ -45,6 +45,8 @@ object HevTunnelManager {
                 misc:
                   log-level: debug
                   task-stack-size: 86016
+                  tcp-buffer-size: 131072
+                  udp-buffer-size: 131072
             """.trimIndent()
             configFile.writeText(yaml)
             

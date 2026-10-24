@@ -89,6 +89,9 @@ class MyVpnService : VpnService() {
                 }
             } catch (_: Exception) {}
 
+            // [핵심] VPN이 켜져도 내 앱(서버)의 소켓 트래픽은 VPN을 타지 않게 제외 (무한 루프 방지)
+            try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
+
             builder.setUnderlyingNetworks(arrayOf(underlying))
             builder.addDnsServer("1.1.1.1")
             builder.setMtu(1500)
