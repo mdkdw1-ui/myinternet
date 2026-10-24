@@ -252,7 +252,28 @@ class MainActivity : AppCompatActivity() {
                         val serverIp = findRealGatewayIp() ?: getGatewayIp() ?: qrIp ?: "192.168.43.1"
                         clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
                         applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
-                        handler.postDelayed({ requestVpn() }, 800)
+                        
+                        // [수정] 서버 포트(1080)가 열려있는지 확인 후 VPN 시작
+                        clientStatusText.text = "서버 포트 확인 중..."
+                        Thread {
+                            var reachable = false
+                            try {
+                                val socket = java.net.Socket()
+                                socket.connect(java.net.InetSocketAddress(serverIp, 1080), 2000)
+                                socket.close()
+                                reachable = true
+                            } catch (e: Exception) {}
+                            
+                            runOnUiThread {
+                                if (reachable) {
+                                    clientStatusText.text = "✅ 서버 접속 성공. VPN 연결..."
+                                    handler.postDelayed({ requestVpn() }, 500)
+                                } else {
+                                    clientStatusText.text = "❌ 서버(1080) 접속 실패. 서버 폰의 앱이 켜져 있는지 확인하세요."
+                                    toast("서버 포트(1080)가 막혀있습니다.")
+                                }
+                            }
+                        }.start()
                     }
                     override fun onClientDisconnected() { clientStatusText.text = "연결 끊김" }
                 })

@@ -28,7 +28,8 @@ class Socks5Server(
             try {
                 serverSocket = ServerSocket().apply {
                     reuseAddress = true
-                    bind(InetSocketAddress(port), 50)   // 모든 인터페이스(로컬 핫스팟 포함)
+                    // [수정] 모든 네트워크 인터페이스에서 들어오는 연결을 허용 (핫스팟 클라이언트 접속 허용)
+                    bind(InetSocketAddress("0.0.0.0", port), 50)
                 }
                 while (running) {
                     val c = try { serverSocket?.accept() ?: break } catch (_: Exception) { break }
