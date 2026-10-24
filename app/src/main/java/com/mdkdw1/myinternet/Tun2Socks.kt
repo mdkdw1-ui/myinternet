@@ -3,7 +3,6 @@ package com.mdkdw1.myinternet
 import java.io.FileInputStream
 import java.io.FileOutputStream
 import java.net.*
-import java.nio.channels.SocketChannel
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.concurrent.thread
 
@@ -103,12 +102,9 @@ class Tun2Socks(
     }
 
     private fun newSocket(): Socket {
-        return try {
-            SocketChannel.open(StandardProtocolFamily.INET).socket()
-        } catch (e: Exception) {
-            android.util.Log.w("Tun2Socks", "IPv4 SocketChannel 실패, 기본 Socket 사용", e)
-            Socket()
-        }
+        // [수정] StandardProtocolFamily는 Android에서 SocketChannel.open() 오버로드가 없음.
+        // Socket() + 명시적 IPv4 대상 주소 조합으로 충분 (protect()가 VPN 우회 보장).
+        return Socket()
     }
 
     private fun openSocks(dstIp: Int, dstPort: Int): Socket? {
