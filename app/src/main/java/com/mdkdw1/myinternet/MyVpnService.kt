@@ -101,14 +101,18 @@ class MyVpnService : VpnService() {
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
 
+            Log.d("MyVpn", "Hev 시작 시도: host=$host, port=$port, fd=${pfd.fd}")
             val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
             if (!started) {
                 lastError = HevTunnelManager.lastError ?: "hev 시작 실패"
+                Log.e("MyVpn", "Hev 시작 실패: $lastError")
+                android.widget.Toast.makeText(this, "VPN 실패: $lastError", android.widget.Toast.LENGTH_LONG).show()
                 try { pfd.close() } catch (_: Exception) {}
                 tun = null; isRunning = false
                 if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(); return
             }
+            Log.d("MyVpn", "Hev 시작 성공!")
             
             isRunning = true
             // 알림 텍스트 업데이트
