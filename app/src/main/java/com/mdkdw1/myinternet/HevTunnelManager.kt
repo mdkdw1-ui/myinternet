@@ -26,11 +26,13 @@ object HevTunnelManager {
         if (!libLoaded) { lastError = "라이브러리 미탑재"; return false }
         if (running) return true
         lastError = null
-        
+
         try {
-            // 1. YAML 문자열 준비
+            val configFile = File(cacheDir, "hev_config.yml")
+            
+            // MTU 8500 (hev 2.14.4 표준값)
             val yaml = "tunnel:\n" +
-                       "  mtu: 1350\n" +
+                       "  mtu: 8500\n" +
                        "socks5:\n" +
                        "  port: $srvPort\n" +
                        "  address: $srvHost\n" +
@@ -38,26 +40,25 @@ object HevTunnelManager {
                        "  username: $user\n" +
                        "  password: $pass\n"
             
-            Log.d(TAG, "==== YAML 준비 ====\n$yaml")
-            
-            // 2. 파일 쓰기 (실패 시 에러 기록)
-            val configFile = File(cacheDir, "hev_config.yml")
-            if (!cacheDir.exists()) {
-                if (!cacheDir.mkdirs()) {
-                    lastError = "캐시 디렉토리 생성 실패"
-                    Log.e(TAG, lastError!!)
-                    return false
-                }
-            }
             configFile.writeText(yaml)
-            Log.i(TAG, "설정 파일 쓰기 완료: ${configFile.absolutePath} (size=${configFile.length()})")
             
-            // 3. JNI 호출
-            Log.i(TAG, "TProxyStartService 호출 (fd=$tunFd)")
+            // 파일 내용을 다시 읽어서 로그에 남김 (실제로 어떻게 쓰였는지 확인)
+            val actual = try { configFile.readText() } catch (e: Exception) { "읽기 실패: ${e.message}" }
+            
+            Log.i(TAG, "===== HEV CONFIG =====")
+            Log.i(TAG, "path=${configFile.absolutePath}")
+            Log.i(TAG, "size=${configFile.length()} bytes")
+            Log.i(TAG, "actual_content_begin")
+            actual.split("\n").forEach { line -> Log.i(TAG, "  | $line") }
+            Log.i(TAG, "actual_content_end")
+            Log.i(TAG, "tunFd=$tunFd")
+            
+            // JNI 호출 전 로그
+            Log.i(TAG, ">>> TProxyStartService 호출 직전")
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
+            Log.i(TAG, "<<< TProxyStartService 호출 완료")
             
             running = true
-            Log.i(TAG, "TProxyStartService 호출 완료, running=true")
             return true
         } catch (e: Throwable) {
             lastError = "Hev 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
