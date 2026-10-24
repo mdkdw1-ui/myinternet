@@ -32,7 +32,7 @@ object HevTunnelManager {
             val configFile = File(cacheDir, "hev_config.yml")
             // 공식 conf/main.yml 스키마 그대로
             val content = "tunnel:\n" +
-                          "  mtu: 8500\n" +
+                          "  mtu: 1500\n" +
                           "  ipv4: 198.18.0.1\n" +
                           "  ipv6: 'fc00::1'\n" +
                           "socks5:\n" +
@@ -41,6 +41,12 @@ object HevTunnelManager {
                           "  udp: 'udp'\n" +
                           "  username: $user\n" +
                           "  password: $pass\n" +
+                          "mapdns:\n" +
+                          "  address: 198.18.0.2\n" +
+                          "  port: 53\n" +
+                          "  network: 240.0.0.0\n" +
+                          "  netmask: 240.0.0.0\n" +
+                          "  cache-size: 10000\n" +
                           "misc:\n" +
                           "  log-level: debug\n"
             val bytes = content.toByteArray(Charsets.UTF_8)

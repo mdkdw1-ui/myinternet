@@ -251,10 +251,14 @@ class MainActivity : AppCompatActivity() {
                     override fun onClientConnected() {
                         val serverIp = findRealGatewayIp() ?: getGatewayIp() ?: qrIp ?: "192.168.43.1"
                         clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
+                        android.util.Log.i("MainActivity", "client connected, hotspotNetwork=" + LocalHotspotManager.hotspotNetwork + ", serverIp=" + serverIp)
+                        // [수정] 서버 IP 가 핫스팟 대역(192.168.x / 10.x)인지 확인
+                        if (!(serverIp.startsWith("192.168.") || serverIp.startsWith("10."))) {
+                            clientStatusText.text = "⚠️ 서버 IP 가 핫스팟 대역이 아님: $serverIp"
+                            toast("서버 IP 확인 실패: $serverIp")
+                            return
+                        }
                         applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
-                        
-                        // [수정] 안드로이드 OS가 '인터넷 없음'으로 판단하여 통신을 막는 것을 우회하기 위해
-                        // 포트 검사 없이 즉시 VPN을 켭니다. VPN이 켜지면 OS가 이 와이파이를 통로로 인정합니다.
                         clientStatusText.text = "✅ 핫스팟 연결됨. VPN 강제 연결 중..."
                         handler.postDelayed({ requestVpn() }, 500)
                     }

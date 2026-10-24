@@ -78,23 +78,38 @@ class MyVpnService : VpnService() {
             val builder = Builder()
             builder.setSession("MyInternet")
             builder.addAddress("10.0.0.2", 32)
-            // 모든 트래픽을 VPN으로 강제
-            builder.addRoute("0.0.0.0", 0)
             builder.addAddress("fd00::1", 128)
-            
-            // 서버 IP 우회 라우팅 (무한 루프 방지)
+
+            // [수정] 0.0.0.0/0 전체 라우팅 제거.
+            // VPN 터널로 보낼 대역만 지정 (hev-socks5-tunnel이 내부에서 처리).
+            // 사설망(핫스팟)은 VPN을 타지 않도록 제외.
+            // 198.18.0.0/15 는 hev의 가상 터널 대역 (mapdns/터널 주소와 충돌 방지용)
+            builder.addRoute("0.0.0.0", 0)
+            // 핫스팟 서브넷(예: 192.168.x.0/24, 10.x.x.0/24)은 VPN 밖으로 우회
             try {
                 val serverIp = java.net.InetAddress.getByName(host).hostAddress
                 if (serverIp != null && !serverIp.contains(":")) {
+                    // 서버 IP 단일 호스트는 VPN을 타지 않게 /32 로 우회
                     builder.addRoute(serverIp, 32)
+                    android.util.Log.i("MyVpn", "bypass route for server: $serverIp/32")
+                    // 같은 서브넷 전체도 우회 (핫스팟 게이트웨이/ARP 등)
+                    val parts = serverIp.split(".")
+                    if (parts.size == 4) {
+                        val subnet = parts[0] + "." + parts[1] + "." + parts[2] + ".0"
+                        builder.addRoute(subnet, 24)
+                        android.util.Log.i("MyVpn", "bypass route for hotspot subnet: $subnet/24")
+                    }
                 }
-            } catch (_: Exception) {}
+            } catch (e: Exception) {
+                android.util.Log.e("MyVpn", "bypass route error", e)
+            }
 
-            // [핵심] VPN이 켜져도 내 앱(서버)의 소켓 트래픽은 VPN을 타지 않게 제외 (무한 루프 방지)
+            // VPN이 켜져도 내 앱 소켓은 VPN을 타지 않게 제외 (무한 루프 방지)
             try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
 
             builder.setUnderlyingNetworks(arrayOf(underlying))
-            builder.addDnsServer("1.1.1.1")
+            // [수정] DNS 는 hev mapdns 주소로 지정 (UDP DNS 를 SOCKS5 로 프록시)
+            builder.addDnsServer("198.18.0.2")
             builder.setMtu(1500)
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
 

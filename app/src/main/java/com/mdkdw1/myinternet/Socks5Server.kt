@@ -155,7 +155,7 @@ class Socks5Server(
     }
 
     private fun handleUdpAssociate(client: Socket, out: OutputStream) {
-        android.util.Log.i("Socks5Server", "UDP 요청 수신 (게임 데이터용)")
+        android.util.Log.i("Socks5Server", "UDP 요청 수신 (게임 데이터용) from ${client.inetAddress.hostAddress}:${client.port}, local=${client.localAddress.hostAddress}:${client.localPort}")
         val relay = DatagramSocket(0, InetAddress.getByName("0.0.0.0"))
         relay.soTimeout = 0
         val bndPort = relay.localPort
