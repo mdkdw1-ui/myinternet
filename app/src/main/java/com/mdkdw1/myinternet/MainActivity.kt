@@ -256,10 +256,12 @@ class MainActivity : AppCompatActivity() {
                     }
                     override fun onClientConnected() {
                         android.util.Log.i("MainActivity", "onClientConnected fired")
-                        val g1 = findRealGatewayIp()
-                        val g2 = getGatewayIp()
-                        android.util.Log.i("MainActivity", "gateways: findReal=$g1 getGateway=$g2 qrIp=$qrIp")
-                        val serverIp = g1 ?: g2 ?: qrIp ?: "192.168.43.1"
+                        val qrIpVal = qrIp
+                        val gatewayIpVal = getGatewayIp()
+                        val realGwVal = findRealGatewayIp()
+                        android.util.Log.i("MainActivity", "gateways: qrIp=$qrIpVal getGateway=$gatewayIpVal findReal=$realGwVal")
+                        // [수정] QR의 서버 IP가 가장 신뢰할 수 있음
+                        val serverIp = qrIpVal ?: gatewayIpVal ?: realGwVal ?: "192.168.43.1"
                         clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
                         if (!(serverIp.startsWith("192.168.") || serverIp.startsWith("10."))) {
                             android.util.Log.e("MainActivity", "invalid serverIp: $serverIp")
@@ -364,9 +366,8 @@ class MainActivity : AppCompatActivity() {
                         if (addr is java.net.Inet4Address) {
                             val ip = addr.hostAddress
                             if (ip != null && (ip.startsWith("10.") || ip.startsWith("192.168."))) {
-                                // IP의 마지막 자리를 .1로 변경 (예: 10.204.228.226 -> 10.204.228.1)
-                                val prefix = ip.substringBeforeLast(".")
-                                return "$prefix.1"
+                                // [수정] 마지막 자리를 .1로 바꾸지 않고 원본 반환
+                                return ip
                             }
                         }
                     }
