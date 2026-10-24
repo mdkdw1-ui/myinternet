@@ -9,7 +9,6 @@ object HevTunnelManager {
     @Volatile var lastError: String? = null
     @Volatile private var libLoaded = false
     
-    // MTU 설정
     private const val MTU = 1350
 
     init {
@@ -33,22 +32,17 @@ object HevTunnelManager {
         return try {
             val configFile = File(cacheDir, "hev_config.yml")
             
-            // 💡 정상적인 hev 2.14.4 스키마 (들여쓰기와 줄바꿈 100% 보장)
-            val yaml = """
-                tunnel:
-                  mtu: $MTU
-                socks5:
-                  port: $srvPort
-                  address: $srvHost
-                  udp: udp
-                  username: $user
-                  password: $pass
-                misc:
-                  log-level: debug
-                  task-stack-size: 86016
-                  tcp-buffer-size: 131072
-                  udp-buffer-size: 131072
-            """.trimIndent()
+            // 💡 스페이스 2칸 들여쓰기를 완벽하게 맞춘 초간단 YAML
+            val yaml = "tunnel:\n" +
+                       "  mtu: $MTU\n" +
+                       "socks5:\n" +
+                       "  port: $srvPort\n" +
+                       "  address: $srvHost\n" +
+                       "  udp: udp\n" +
+                       "  username: $user\n" +
+                       "  password: $pass\n" +
+                       "misc:\n" +
+                       "  log-level: debug\n"
             
             configFile.writeText(yaml)
             Log.i(TAG, "TProxyStartService 시작 준비 (host=$srvHost:$srvPort)")
