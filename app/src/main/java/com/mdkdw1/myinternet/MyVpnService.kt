@@ -19,6 +19,9 @@ class MyVpnService : VpnService() {
         @Volatile var isRunning = false
         @Volatile var lastError: String? = null
         @Volatile var instance: MyVpnService? = null
+
+        fun protectSocket(s: java.net.Socket) { try { instance?.protect(s) } catch (_: Exception) {} }
+        fun protectSocket(s: java.net.DatagramSocket) { try { instance?.protect(s) } catch (_: Exception) {} }
     }
 
     private var tun: ParcelFileDescriptor? = null
