@@ -28,8 +28,12 @@ class Socks5Server(
             try {
                 serverSocket = ServerSocket().apply {
                     reuseAddress = true
-                    // [수정] 모든 네트워크 인터페이스에서 들어오는 연결을 허용 (핫스팟 클라이언트 접속 허용)
-                    bind(InetSocketAddress("0.0.0.0", port), 50)
+                    // [수정] OS 방화벽을 우회하기 위해 모든 인터페이스(IPv4, IPv6)에 바인딩 시도
+                    try {
+                        bind(InetSocketAddress(java.net.InetAddress.getByName("0.0.0.0"), port), 50)
+                    } catch (e: Exception) {
+                        bind(InetSocketAddress(port), 50) // 폴백
+                    }
                 }
                 while (running) {
                     val c = try { serverSocket?.accept() ?: break } catch (_: Exception) { break }

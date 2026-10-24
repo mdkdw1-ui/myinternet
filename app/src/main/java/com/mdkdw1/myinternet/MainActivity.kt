@@ -259,7 +259,7 @@ class MainActivity : AppCompatActivity() {
                             var reachable = false
                             try {
                                 val socket = java.net.Socket()
-                                socket.connect(java.net.InetSocketAddress(serverIp, 1080), 2000)
+                                socket.connect(java.net.InetSocketAddress(serverIp, 1080), 5000) // 5초 대기
                                 socket.close()
                                 reachable = true
                             } catch (e: Exception) {}
