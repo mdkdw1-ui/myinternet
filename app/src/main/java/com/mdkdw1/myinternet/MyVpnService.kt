@@ -20,8 +20,8 @@ class MyVpnService : VpnService() {
         @Volatile var lastError: String? = null
         @Volatile var instance: MyVpnService? = null
 
-        fun protectSocket(s: java.net.Socket) { try { instance?.protect(s) } catch (_: Exception) {} }
-        fun protectSocket(s: java.net.DatagramSocket) { try { instance?.protect(s) } catch (_: Exception) {} }
+        fun protectSocket(s: java.net.Socket): Boolean { return try { instance?.protect(s) ?: false } catch (_: Exception) { false } }
+        fun protectSocket(s: java.net.DatagramSocket): Boolean { return try { instance?.protect(s) ?: false } catch (_: Exception) { false } }
     }
 
     private var tun: ParcelFileDescriptor? = null
@@ -91,13 +91,13 @@ class MyVpnService : VpnService() {
                 val serverIp = java.net.InetAddress.getByName(host).hostAddress
                 if (serverIp != null && !serverIp.contains(":")) {
                     // 서버 IP 단일 호스트는 VPN을 타지 않게 /32 로 우회
-                    builder.addRoute(serverIp, 32)
+                    // [제거] addRoute(serverIp, 32) 는 VPN 으로 밀어넣음 → 루프 원인
                     android.util.Log.i("MyVpn", "bypass route for server: $serverIp/32")
                     // 같은 서브넷 전체도 우회 (핫스팟 게이트웨이/ARP 등)
                     val parts = serverIp.split(".")
                     if (parts.size == 4) {
                         val subnet = parts[0] + "." + parts[1] + "." + parts[2] + ".0"
-                        builder.addRoute(subnet, 24)
+                        // [제거] addRoute(subnet, 24) 는 VPN 으로 밀어넣음 → 루프 원인
                         android.util.Log.i("MyVpn", "bypass route for hotspot subnet: $subnet/24")
                     }
                 }
