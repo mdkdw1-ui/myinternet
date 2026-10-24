@@ -30,7 +30,19 @@ object HevTunnelManager {
 
         try {
             val configFile = File(cacheDir, "hev_config.yml")
-            val content = "tunnel:\n  mtu: 8500\nsocks5:\n  port: $srvPort\n  address: $srvHost\n  udp: udp\n  username: $user\n  password: $pass\n"
+            // 공식 conf/main.yml 스키마 그대로
+            val content = "tunnel:\n" +
+                          "  mtu: 8500\n" +
+                          "  ipv4: 198.18.0.1\n" +
+                          "  ipv6: 'fc00::1'\n" +
+                          "socks5:\n" +
+                          "  port: $srvPort\n" +
+                          "  address: $srvHost\n" +
+                          "  udp: 'udp'\n" +
+                          "  username: $user\n" +
+                          "  password: $pass\n" +
+                          "misc:\n" +
+                          "  log-level: debug\n"
             val bytes = content.toByteArray(Charsets.UTF_8)
 
             Log.i(TAG, "=========== HEV CONFIG WRITE START ===========")
@@ -43,22 +55,21 @@ object HevTunnelManager {
             }
 
             Log.i(TAG, "written_size=${configFile.length()} bytes")
+            Log.i(TAG, ">>> TProxyStartService CALL (fd=$tunFd, official schema)")
 
-            val written = configFile.readBytes()
-            val sb = StringBuilder()
-            for (b in written) {
-                val c = b.toInt() and 0xFF
-                if (c in 0x20..0x7E) sb.append(c.toChar())
-                else if (c == 0x0A) sb.append("\\n")
-                else sb.append("\\x").append(String.format("%02x", c))
+            val watchdog = Thread {
+                try {
+                    Thread.sleep(8000)
+                    Log.e(TAG, "🚨 TProxyStartService 8초 넘게 반환 안 됨")
+                } catch (_: InterruptedException) {}
             }
-            Log.i(TAG, "HEXDUMP=<${sb.toString()}>")
-            Log.i(TAG, "=========== HEV CONFIG WRITE END ===========")
+            watchdog.isDaemon = true
+            watchdog.start()
 
-            Log.i(TAG, ">>> TProxyStartService CALL (fd=$tunFd, path=${configFile.absolutePath})")
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
-            Log.i(TAG, "<<< TProxyStartService RETURNED")
+            watchdog.interrupt()
 
+            Log.i(TAG, "<<< TProxyStartService RETURNED")
             running = true
             return true
         } catch (e: Throwable) {
