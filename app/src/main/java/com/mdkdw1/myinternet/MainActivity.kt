@@ -167,14 +167,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startServerAndHotspot() {
-        if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED &&
-            Build.VERSION.SDK_INT >= 33) {
-            ensurePermissions()
-            toast("권한을 허용한 후 다시 눌러주세요")
-            return
+        android.util.Log.i("MainActivity", "startServerAndHotspot() entered, SDK=${Build.VERSION.SDK_INT}")
+        if (Build.VERSION.SDK_INT >= 33) {
+            val granted = ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) == PackageManager.PERMISSION_GRANTED
+            android.util.Log.i("MainActivity", "NEARBY_WIFI_DEVICES granted=$granted")
+            if (!granted) {
+                ensurePermissions()
+                toast("권한을 허용한 후 다시 눌러주세요")
+                return
+            }
         }
         
         startServer()
+        android.util.Log.i("MainActivity", "startServer() returned, now starting hotspot")
         
         localHotspot?.startHotspot(object : LocalHotspotManager.HotspotCallback {
             override fun onHotspotStarted(ssid: String, password: String) {
@@ -400,9 +405,21 @@ class MainActivity : AppCompatActivity() {
         if (requestCode == VPN_REQ) { if (resultCode == RESULT_OK) startVpnService() else toast("VPN 권한 필요") }
     }
     private fun startServer() {
-        val i = Intent(this, Socks5Service::class.java).apply { action = Socks5Service.ACTION_START }
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
-        toggleBtn.text = "■ 서버 중지"; statusText.text = "🟢 실행 중"; toast("서버 시작")
+        android.util.Log.i("MainActivity", "startServer() called")
+        try {
+            val i = Intent(this, Socks5Service::class.java).apply { action = Socks5Service.ACTION_START }
+            if (Build.VERSION.SDK_INT >= 26) {
+                android.util.Log.i("MainActivity", "calling startForegroundService")
+                startForegroundService(i)
+            } else {
+                startService(i)
+            }
+            android.util.Log.i("MainActivity", "service start call returned OK")
+            toggleBtn.text = "■ 서버 중지"; statusText.text = "🟢 실행 중"; toast("서버 시작")
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "startServer failed: ${e.javaClass.simpleName} - ${e.message}", e)
+            toast("서버 시작 실패: ${e.javaClass.simpleName} ${e.message}")
+        }
     }
     private fun stopServer() {
         startService(Intent(this, Socks5Service::class.java).apply { action = Socks5Service.ACTION_STOP })
