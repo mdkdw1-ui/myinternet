@@ -32,7 +32,7 @@ object HevTunnelManager {
         return try {
             val configFile = File(cacheDir, "hev_config.yml")
             
-            // 💡 스페이스 2칸 들여쓰기를 완벽하게 맞춘 초간단 YAML
+            // 💡 misc 섹션 제거, tunnel과 socks5만 남긴 초간단 YAML
             val yaml = "tunnel:\n" +
                        "  mtu: $MTU\n" +
                        "socks5:\n" +
@@ -40,22 +40,20 @@ object HevTunnelManager {
                        "  address: $srvHost\n" +
                        "  udp: udp\n" +
                        "  username: $user\n" +
-                       "  password: $pass\n" +
-                       "misc:\n" +
-                       "  log-level: debug\n"
+                       "  password: $pass\n"
             
             configFile.writeText(yaml)
-            Log.i(TAG, "TProxyStartService 시작 준비 (host=$srvHost:$srvPort)")
+            Log.i(TAG, "TProxyStartService 시작 (host=$srvHost:$srvPort)")
             Log.d(TAG, "YAML 설정:\n$yaml")
             
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
             
             running = true
-            Log.i(TAG, "TProxyStartService 정상 호출 완료")
+            Log.i(TAG, "TProxyStartService 호출 완료")
             true
         } catch (e: Throwable) {
             lastError = "JNI 오류: ${e.javaClass.simpleName} - ${e.message}"
-            Log.e(TAG, "TProxyStartService 중 에러 발생", e)
+            Log.e(TAG, "TProxyStartService 에러", e)
             false
         }
     }
