@@ -2,6 +2,7 @@ package com.mdkdw1.myinternet
 
 import android.app.*
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
