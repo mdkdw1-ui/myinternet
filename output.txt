@@ -10331,3 +10331,2005 @@ __pycache__/
 ===== ./output.txt =====
 -e 
 
+===== ./version.properties =====
+VERSION_NAME=0.010
+VERSION_CODE=10
+-e 
+
+===== ./.github/workflows/build.yml =====
+name: Build & Release APK
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.9
+
+      - name: Setup Android NDK r25c
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25c
+
+      - name: Build hev-socks5-tunnel
+        run: |
+          curl -L -o hev.tar.xz https://github.com/heiher/hev-socks5-tunnel/releases/download/2.14.4/hev-socks5-tunnel-2.14.4.tar.xz
+          tar -xf hev.tar.xz
+          mv hev-socks5-tunnel-2.14.4 hev-src
+          cd hev-src
+          sed -i 's/LOCAL_CFLAGS :=/LOCAL_CFLAGS := -DPKGNAME=com\/mdkdw1\/myinternet -DCLSNAME=HevTunnelManager/' Android.mk
+          $ANDROID_NDK_HOME/ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=Android.mk \
+            APP_ABI=arm64-v8a \
+            APP_PLATFORM=android-24 \
+            APP_ALLOW_MISSING_DEPS=true \
+            NDK_LIBS_OUT=./libs \
+            NDK_OUT=./obj
+          cd ..
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp hev-src/libs/arm64-v8a/*.so app/src/main/jniLibs/arm64-v8a/
+          echo "=== jniLibs after ndk-build ==="
+          ls -la app/src/main/jniLibs/arm64-v8a/
+          test -f app/src/main/jniLibs/arm64-v8a/libhev-socks5-tunnel.so || (echo "❌ libhev-socks5-tunnel.so 없음"; exit 1)
+          echo "✅ .so 확인됨"
+
+      - name: Bump version from latest tag
+        id: bump
+        run: |
+          git fetch --tags
+          LAST=$(git tag -l 'v*' | sort -V | tail -1 | sed 's/^v//')
+          LAST=${LAST:-0.000}
+          NEW_NAME=$(python3 -c "print(f'{${LAST} + 0.001:.3f}')")
+          NEW_CODE=$(( $(git rev-list --count HEAD) ))
+          echo "new_name=$NEW_NAME" >> $GITHUB_OUTPUT
+          echo "new_code=$NEW_CODE" >> $GITHUB_OUTPUT
+
+      - name: Build Debug APK
+        run: |
+          gradle assembleDebug --no-daemon --stacktrace \
+            -PversionName=${{ steps.bump.outputs.new_name }} \
+            -PversionCode=${{ steps.bump.outputs.new_code }}
+
+      - name: Verify APK exists
+        run: |
+          find app/build/outputs -name "*.apk" -ls
+          test -f app/build/outputs/apk/debug/app-debug.apk
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: myinternet-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 90
+
+      - name: Create Release with gh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="v${{ steps.bump.outputs.new_name }}"
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "MyInternet $TAG" --generate-notes
+          gh release upload "$TAG" app/build/outputs/apk/debug/*.apk --clobber
+-e 
+
+===== ./bump_version.py =====
+import re
+
+with open("version.properties", "r") as f:
+    content = f.read()
+
+ver_name = float(re.search(r"VERSION_NAME=([\d.]+)", content).group(1))
+ver_code = int(re.search(r"VERSION_CODE=(\d+)", content).group(1))
+
+new_name = round(ver_name + 0.001, 3)
+new_code = ver_code + 1
+
+with open("version.properties", "w") as f:
+    f.write(f"VERSION_NAME={new_name:.3f}\nVERSION_CODE={new_code}\n")
+
+print(f"Bumped: {ver_name} -> {new_name:.3f} (code {ver_code} -> {new_code})")
+-e 
+
+===== ./README.md =====
+# myinternet
+
+Termux/Kotlin 기반 테더링 프록시 앱.
+
+## 빌드
+GitHub에 push 하면 Actions가 자동으로 APK를 빌드하고 Release에 올립니다.
+버전은 `version.properties` 기준으로 push마다 0.001씩 증가합니다.
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/MainActivity.kt =====
+package com.mdkdw1.myinternet
+
+import android.Manifest
+import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.graphics.Bitmap
+import android.graphics.Typeface
+import android.net.Uri
+import android.net.VpnService
+import android.os.Build
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.text.InputType
+import android.view.View
+import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
+
+class MainActivity : AppCompatActivity() {
+    private lateinit var settings: SettingsManager
+    private lateinit var serverPanel: LinearLayout
+    private lateinit var clientPanel: LinearLayout
+
+    private lateinit var statusText: TextView
+    private lateinit var statsText: TextView
+    private lateinit var toggleBtn: Button
+    private lateinit var hotspotInfoText: TextView
+    private lateinit var qrImage: ImageView
+
+    private lateinit var vpnStatusText: TextView
+    private lateinit var vpnInfoText: TextView
+    private lateinit var hostInput: EditText
+    private lateinit var portInput: EditText
+    private lateinit var userInput: EditText
+    private lateinit var passInput: EditText
+    private lateinit var clientStatusText: TextView
+
+    private var localHotspot: LocalHotspotManager? = null
+    private val handler = Handler(Looper.getMainLooper())
+    private val VPN_REQ = 200
+    private val PERM_REQ = 300
+
+    private val versionName: String by lazy {
+        try { packageManager.getPackageInfo(packageName, 0).versionName ?: "0.000" }
+        catch (_: Exception) { "0.000" }
+    }
+
+    private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
+        val text = result.contents ?: return@registerForActivityResult
+        handleScannedText(text)
+    }
+
+    private val refresh = object : Runnable {
+        override fun run() {
+            val srv = Socks5Service.server
+            if (srv != null && Socks5Service.isRunning)
+                statsText.text = "활성 ${srv.activeConnections.get()} · 총 ${srv.totalConnections.get()}"
+            else statsText.text = ""
+
+            if (MyVpnService.isRunning) {
+                vpnStatusText.text = "🟢 VPN 연결됨"
+                vpnInfoText.text = "서버: ${settings.srvHost}:${settings.srvPort}"
+            } else {
+                vpnStatusText.text = "⚪ VPN 중지"
+                vpnInfoText.text = MyVpnService.lastError?.let { "오류: $it" } ?: ""
+            }
+            handler.postDelayed(this, 1000)
+        }
+    }
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        CrashHandler.init(this)
+        settings = SettingsManager(this)
+        localHotspot = LocalHotspotManager(this)
+
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED)
+            ActivityCompat.requestPermissions(this, arrayOf(Manifest.permission.POST_NOTIFICATIONS), 100)
+
+        buildUI()
+        handler.post(refresh)
+        ensurePermissions()
+    }
+
+    private fun ensurePermissions() {
+        val perms = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= 33) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+                perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+        if (perms.isNotEmpty()) ActivityCompat.requestPermissions(this, perms.toTypedArray(), PERM_REQ)
+    }
+
+    private fun buildUI() {
+        val scroll = ScrollView(this)
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL; setPadding(48, 64, 48, 48)
+        }
+        scroll.addView(root)
+        root.addView(TextView(this).apply { text = "🌐 MyInternet"; textSize = 26f })
+        root.addView(TextView(this).apply { text = "v$versionName"; textSize = 13f; setTextColor(0xFF888888.toInt()); setPadding(0, 0, 0, 20) })
+
+        val modeGroup = RadioGroup(this).apply { orientation = RadioGroup.HORIZONTAL; setPadding(0, 0, 0, 16) }
+        val rbServer = RadioButton(this).apply { text = "서버 (공유 폰)"; id = View.generateViewId(); isChecked = true }
+        val rbClient = RadioButton(this).apply { text = "클라이언트"; id = View.generateViewId() }
+        modeGroup.addView(rbServer); modeGroup.addView(rbClient)
+        modeGroup.setOnCheckedChangeListener { _, id ->
+            val isServer = id == rbServer.id
+            serverPanel.visibility = if (isServer) View.VISIBLE else View.GONE
+            clientPanel.visibility = if (isServer) View.GONE else View.VISIBLE
+        }
+        root.addView(modeGroup)
+
+        serverPanel = buildServerPanel()
+        clientPanel = buildClientPanel().apply { visibility = View.GONE }
+        root.addView(serverPanel); root.addView(clientPanel)
+
+        root.addView(title("업데이트"))
+        root.addView(Button(this).apply { text = "업데이트 확인"; setOnClickListener { checkUpdate() } })
+
+        root.addView(title("디버그"))
+        root.addView(Button(this).apply {
+            text = "📜 앱 로그 보기 (크래시 원인 확인)"
+            setOnClickListener {
+                startActivity(Intent(this@MainActivity, LogcatActivity::class.java))
+            }
+        })
+
+        setContentView(scroll)
+    }
+
+    private fun buildServerPanel(): LinearLayout {
+        val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        
+        p.addView(title("1️⃣ 원터치 서버 시작 (프록시 + 핫스팟)"))
+        toggleBtn = Button(this).apply {
+            text = if (Socks5Service.isRunning) "■ 서버 중지" else "▶ 서버 시작 (한 번에)"
+            setOnClickListener { 
+                if (Socks5Service.isRunning) stopServer() else startServerAndHotspot() 
+            }
+        }
+        p.addView(toggleBtn)
+        statusText = TextView(this).apply { text = if (Socks5Service.isRunning) "🟢 실행 중" else "⚪ 중지됨"; textSize = 16f; setPadding(0, 16, 0, 8) }
+        p.addView(statusText)
+        statsText = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()) }
+        p.addView(statsText)
+
+        p.addView(title("2️⃣ 클라이언트 접속 정보 (QR)"))
+        hotspotInfoText = TextView(this).apply { textSize = 14f; setPadding(0, 8, 0, 8); typeface = Typeface.MONOSPACE }
+        p.addView(hotspotInfoText)
+        qrImage = ImageView(this).apply { layoutParams = LinearLayout.LayoutParams(500, 500) }
+        p.addView(qrImage)
+
+        return p
+    }
+
+    private fun startServerAndHotspot() {
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED &&
+            Build.VERSION.SDK_INT >= 33) {
+            ensurePermissions()
+            toast("권한을 허용한 후 다시 눌러주세요")
+            return
+        }
+        
+        startServer()
+        
+        localHotspot?.startHotspot(object : LocalHotspotManager.HotspotCallback {
+            override fun onHotspotStarted(ssid: String, password: String) {
+                handler.postDelayed({
+                    val myIp = getServerHotspotIp()
+                    hotspotInfoText.text = "SSID: $ssid\nPW: $password\n내 IP: $myIp"
+                    val cfg = "HOTSPOT:$ssid:$password:$myIp"
+                    qrImage.setImageBitmap(QrHelper.generate(cfg))
+                }, 1000)
+            }
+            override fun onHotspotFailed(reason: String) {
+                hotspotInfoText.text = "핫스팟 실패: $reason"
+            }
+            override fun onClientConnected() {}
+            override fun onClientDisconnected() {}
+        })
+    }
+
+    private fun buildClientPanel(): LinearLayout {
+        val p = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        p.addView(title("📷 QR 스캔으로 핫스팟 연결"))
+        p.addView(Button(this).apply {
+            text = "📷 서버 QR 스캔"
+            setOnClickListener {
+                val opts = ScanOptions().apply {
+                    setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                    setPrompt("서버 화면의 QR을 스캔하세요")
+                    setBeepEnabled(false)
+                }
+                scanLauncher.launch(opts)
+            }
+        })
+        clientStatusText = TextView(this).apply { textSize = 13f; setPadding(0, 8, 0, 8) }
+        p.addView(clientStatusText)
+
+        p.addView(title("수동 설정 (VPN)"))
+        hostInput = EditText(this).apply { hint = "서버 IP"; setText(settings.srvHost) }
+        portInput = EditText(this).apply { hint = "포트"; setText(settings.srvPort.toString()); inputType = InputType.TYPE_CLASS_NUMBER }
+        userInput = EditText(this).apply { hint = "사용자명"; setText(settings.srvUser) }
+        passInput = EditText(this).apply { hint = "비밀번호"; setText(settings.srvPass); inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD }
+        listOf(hostInput, portInput, userInput, passInput).forEach { p.addView(it) }
+        
+        p.addView(Button(this).apply {
+            text = "VPN 연결"
+            setOnClickListener {
+                saveClientFields()
+                if (MyVpnService.isRunning) stopVpn() else requestVpn()
+            }
+        })
+        vpnStatusText = TextView(this).apply { text = "⚪ VPN 중지"; textSize = 16f; setPadding(0, 16, 0, 8) }
+        p.addView(vpnStatusText)
+        vpnInfoText = TextView(this).apply { textSize = 13f; setTextColor(0xFF666666.toInt()) }
+        p.addView(vpnInfoText)
+
+        return p
+    }
+
+    private fun handleScannedText(text: String) {
+        if (text.startsWith("HOTSPOT:")) {
+            val parts = text.removePrefix("HOTSPOT:").split(":")
+            if (parts.size >= 2) {
+                val ssid = parts[0]
+                val pw = parts[1]
+                val qrIp = parts.getOrNull(2)
+                clientStatusText.text = "핫스팟 연결 중: $ssid"
+                localHotspot?.cancelPending()
+                localHotspot?.connectToHotspot(ssid, pw, object : LocalHotspotManager.HotspotCallback {
+                    override fun onHotspotStarted(ssid: String, password: String) {}
+                    override fun onHotspotFailed(reason: String) {
+                        clientStatusText.text = "연결 실패: $reason"
+                        toast("핫스팟 실패: $reason")
+                    }
+                    override fun onClientConnected() {
+                        val serverIp = findRealGatewayIp() ?: getGatewayIp() ?: qrIp ?: "192.168.43.1"
+                        clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
+                        applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
+                        handler.postDelayed({ requestVpn() }, 800)
+                    }
+                    override fun onClientDisconnected() { clientStatusText.text = "연결 끊김" }
+                })
+            }
+        } else {
+            val parts = text.trim().split(":")
+            if (parts.size < 2) return
+            applyClientConfig(parts[0], parts.getOrNull(1)?.toIntOrNull() ?: 1080,
+                parts.getOrNull(2) ?: "myinternet", parts.getOrNull(3) ?: "myinternet")
+            toast("IP 설정 완료. VPN 연결...")
+            handler.postDelayed({ requestVpn() }, 500)
+        }
+    }
+
+    private fun getServerHotspotIp(): String {
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
+            for (intf in interfaces) {
+                if (intf.isUp && !intf.isLoopback) {
+                    val name = intf.name
+                    if (name.startsWith("ap") || name.startsWith("swlan") || name.contains("wlan1") || name.contains("softap")) {
+                        for (addr in intf.inetAddresses.toList()) {
+                            if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                                val ip = addr.hostAddress
+                                if (ip != null && (ip.startsWith("192.168.") || ip.startsWith("10."))) return ip
+                            }
+                        }
+                    }
+                }
+            }
+            for (intf in interfaces) {
+                for (addr in intf.inetAddresses.toList()) {
+                    if (addr is java.net.Inet4Address && !addr.isLoopbackAddress) {
+                        val ip = addr.hostAddress
+                        if (ip != null && ip.startsWith("10.204.")) return ip
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        return "192.168.43.1"
+    }
+
+    private fun getGatewayIp(): String? {
+        try {
+            val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as android.net.wifi.WifiManager
+            val ip = wm.dhcpInfo.gateway
+            if (ip != 0) return "${ip and 0xff}.${(ip shr 8) and 0xff}.${(ip shr 16) and 0xff}.${(ip shr 24) and 0xff}"
+        } catch (_: Exception) {}
+        return null
+    }
+
+    private fun applyClientConfig(host: String, port: Int, user: String, pass: String) {
+        hostInput.setText(host); portInput.setText(port.toString()); userInput.setText(user); passInput.setText(pass)
+        settings.srvHost = host; settings.srvPort = port; settings.srvUser = user; settings.srvPass = pass
+    }
+
+    private fun saveClientFields() {
+        settings.srvHost = hostInput.text.toString().trim()
+        settings.srvPort = portInput.text.toString().toIntOrNull() ?: 1080
+        settings.srvUser = userInput.text.toString().ifBlank { "myinternet" }
+        settings.srvPass = passInput.text.toString().ifBlank { "myinternet" }
+    }
+
+    private fun findRealGatewayIp(): String? {
+        try {
+            // 1. ARP 테이블에서 10.x.x.1 또는 192.168.x.1 형태 찾기
+            val process = Runtime.getRuntime().exec("ip neigh")
+            val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
+            var line: String? = reader.readLine()
+            while (line != null) {
+                if (line.contains("REACHABLE") || line.contains("STALE")) {
+                    val parts = line.split(" ")
+                    if (parts.isNotEmpty()) {
+                        val ip = parts[0]
+                        if ((ip.startsWith("10.") || ip.startsWith("192.168.")) && ip.endsWith(".1")) {
+                            return ip
+                        }
+                    }
+                }
+                line = reader.readLine()
+            }
+            reader.close()
+        } catch (_: Exception) {}
+
+        try {
+            // 2. 네트워크 인터페이스에서 게이트웨이 유추
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
+            for (intf in interfaces) {
+                if (intf.isUp && !intf.isLoopback && (intf.name.contains("wlan") || intf.name.contains("ap"))) {
+                    for (addr in intf.inetAddresses.toList()) {
+                        if (addr is java.net.Inet4Address) {
+                            val ip = addr.hostAddress
+                            if (ip != null && (ip.startsWith("10.") || ip.startsWith("192.168."))) {
+                                // IP의 마지막 자리를 .1로 변경 (예: 10.204.228.226 -> 10.204.228.1)
+                                val prefix = ip.substringBeforeLast(".")
+                                return "$prefix.1"
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+
+        return null
+    }
+
+    private fun requestVpn() {
+        if (settings.srvHost.isBlank()) { toast("서버 정보 없음"); return }
+        val intent = VpnService.prepare(this)
+        if (intent != null) startActivityForResult(intent, VPN_REQ) else startVpnService()
+    }
+    private fun startVpnService() {
+        val i = Intent(this, MyVpnService::class.java).apply { action = MyVpnService.ACTION_START }
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+        toast("VPN 시작")
+    }
+    private fun stopVpn() {
+        startService(Intent(this, MyVpnService::class.java).apply { action = MyVpnService.ACTION_STOP })
+        toast("VPN 해제")
+    }
+    @Deprecated("Deprecated in API 30")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == VPN_REQ) { if (resultCode == RESULT_OK) startVpnService() else toast("VPN 권한 필요") }
+    }
+    private fun startServer() {
+        val i = Intent(this, Socks5Service::class.java).apply { action = Socks5Service.ACTION_START }
+        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+        toggleBtn.text = "■ 서버 중지"; statusText.text = "🟢 실행 중"; toast("서버 시작")
+    }
+    private fun stopServer() {
+        startService(Intent(this, Socks5Service::class.java).apply { action = Socks5Service.ACTION_STOP })
+        localHotspot?.stopHotspot()
+        toggleBtn.text = "▶ 서버 시작 (한 번에)"; statusText.text = "⚪ 중지됨"; hotspotInfoText.text = "중지됨"
+        toast("서버 및 핫스팟 중지")
+    }
+    private fun checkUpdate() {
+        toast("확인 중...")
+        UpdateChecker().check(versionName) { info ->
+            if (info != null) AlertDialog.Builder(this)
+                .setTitle("업데이트 발견").setMessage("v${info.version} (현재 v$versionName)")
+                .setPositiveButton("다운로드") { _, _ -> startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(info.url))) }
+                .setNegativeButton("나중에", null).show()
+            else toast("최신 버전 (v$versionName)")
+        }
+    }
+    private fun title(s: String) = TextView(this).apply { text = s; textSize = 17f; setPadding(0, 32, 0, 8); setTypeface(typeface, Typeface.BOLD) }
+    private fun toast(m: String) = Toast.makeText(this, m, Toast.LENGTH_SHORT).show()
+
+    override fun onDestroy() { super.onDestroy(); handler.removeCallbacks(refresh); localHotspot?.stopHotspot() }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/Socks5Server.kt =====
+package com.mdkdw1.myinternet
+
+import java.io.DataInputStream
+import java.io.OutputStream
+import java.net.*
+import java.util.concurrent.*
+import java.util.concurrent.atomic.*
+import kotlin.concurrent.thread
+
+class Socks5Server(
+    private val port: Int,
+    private val username: String,
+    private val password: String
+) {
+    @Volatile private var running = false
+    private var serverSocket: ServerSocket? = null
+    private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
+    private val udpSessions = ConcurrentHashMap<String, UdpRelaySession>()
+
+    val activeConnections = AtomicInteger(0)
+    val totalConnections = AtomicInteger(0)
+    val bytesTransferred = AtomicLong(0)
+
+    fun start() {
+        if (running) return
+        running = true
+        thread(name = "socks5-accept") {
+            try {
+                serverSocket = ServerSocket().apply {
+                    reuseAddress = true
+                    bind(InetSocketAddress(port), 50)   // 모든 인터페이스(로컬 핫스팟 포함)
+                }
+                while (running) {
+                    val c = try { serverSocket?.accept() ?: break } catch (_: Exception) { break }
+                    thread { handle(c) }
+                }
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun stop() {
+        running = false
+        try { serverSocket?.close() } catch (_: Exception) {}
+        serverSocket = null
+        activeSockets.forEach { try { it.close() } catch (_: Exception) {} }
+        activeSockets.clear()
+        udpSessions.values.forEach { it.close() }
+        udpSessions.clear()
+    }
+
+    private fun handle(s: Socket) {
+        activeSockets.add(s); totalConnections.incrementAndGet()
+        var authenticated = false
+        try {
+            s.tcpNoDelay = true
+            s.soTimeout = 15000                       // 핸드셰이크 구간만 타임아웃
+            val i = DataInputStream(s.getInputStream()); val o = s.getOutputStream()
+
+            if (i.readUnsignedByte() != 0x05) return
+            val n = i.readUnsignedByte(); val m = ByteArray(n); i.readFully(m)
+            if (!m.contains(0x02.toByte())) { o.write(byteArrayOf(0x05, 0xFF.toByte())); return }
+            o.write(byteArrayOf(0x05, 0x02)); o.flush()
+
+            if (i.readUnsignedByte() != 0x01) return
+            val un = ByteArray(i.readUnsignedByte()); i.readFully(un)
+            val pw = ByteArray(i.readUnsignedByte()); i.readFully(pw)
+            if (String(un) != username || String(pw) != password) {
+                o.write(byteArrayOf(0x01, 0x01)); return
+            }
+            o.write(byteArrayOf(0x01, 0x00)); o.flush()
+            authenticated = true; activeConnections.incrementAndGet()
+
+            if (i.readUnsignedByte() != 0x05) return
+            val cmd = i.readUnsignedByte(); i.readUnsignedByte()
+            val host: String
+            when (i.readUnsignedByte()) {
+                0x01 -> { val b = ByteArray(4); i.readFully(b)
+                    host = InetAddress.getByAddress(b).hostAddress ?: return }
+                0x03 -> { val b = ByteArray(i.readUnsignedByte()); i.readFully(b)
+                    host = String(b) }
+                0x04 -> { val b = ByteArray(16); i.readFully(b)
+                    host = InetAddress.getByAddress(b).hostAddress ?: return }
+                else -> return
+            }
+            val dstPort = i.readUnsignedShort()
+            s.soTimeout = 0
+
+            when (cmd) {
+                0x01 -> handleConnect(s, o, host, dstPort)
+                0x03 -> handleUdpAssociate(s, o)
+                else -> o.write(byteArrayOf(0x05, 0x07, 0, 1, 0, 0, 0, 0, 0, 0))
+            }
+        } catch (_: Exception) {
+        } finally {
+            try { s.close() } catch (_: Exception) {}
+            activeSockets.remove(s)
+            if (authenticated) activeConnections.decrementAndGet()
+        }
+    }
+
+    private fun handleConnect(client: Socket, out: OutputStream, host: String, port: Int) {
+        val remote = Socket()
+        try {
+            remote.tcpNoDelay = true                  // 게임 소패킷 지연 방지
+            remote.connect(InetSocketAddress(host, port), 10000)
+        } catch (_: Exception) {
+            try { remote.close() } catch (_: Exception) {}
+            out.write(byteArrayOf(0x05, 0x05, 0, 1, 0, 0, 0, 0, 0, 0)); return
+        }
+        activeSockets.add(remote)
+        try {
+            out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0)); out.flush()
+            val t = thread { pipe(client, remote) }
+            pipe(remote, client); t.join()
+        } finally {
+            activeSockets.remove(remote)
+            try { remote.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun handleUdpAssociate(client: Socket, out: OutputStream) {
+        val relay = DatagramSocket(0, InetAddress.getByName("0.0.0.0"))
+        relay.soTimeout = 0
+        val bndPort = relay.localPort
+        // BND.ADDR = 클라이언트가 접속한 서버 IP (0.0.0.0 을 주면 클라이언트가 자기 자신으로 보내버림)
+        val bnd = client.localAddress.address.takeIf { it.size == 4 } ?: ByteArray(4)
+        out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01) + bnd +
+            byteArrayOf((bndPort ushr 8).toByte(), bndPort.toByte())); out.flush()
+
+        val session = UdpRelaySession(relay, client)
+        val key = "${client.inetAddress.hostAddress}:${client.port}"
+        udpSessions[key] = session
+        session.start()
+
+        try {
+            val buf = ByteArray(1)
+            while (running && client.getInputStream().read(buf) != -1) { /* 제어 연결 유지 */ }
+        } catch (_: Exception) {}
+        session.close()
+        udpSessions.remove(key)
+    }
+
+    private class UdpRelaySession(
+        private val relay: DatagramSocket,
+        private val client: Socket
+    ) {
+        @Volatile private var running = true
+        private val clientAddr: InetAddress = client.inetAddress
+        @Volatile private var clientUdpPort = 0
+        private val upstream = DatagramSocket()
+        private val resolved = ConcurrentHashMap<String, InetAddress>()
+
+        init {
+            try {
+                upstream.receiveBufferSize = 262144; upstream.sendBufferSize = 262144
+                relay.receiveBufferSize = 262144; relay.sendBufferSize = 262144
+            } catch (_: Exception) {}
+        }
+
+        fun start() {
+            thread(name = "udp-client-${relay.localPort}") { clientLoop() }
+            thread(name = "udp-upstream-${relay.localPort}") { upstreamLoop() }
+        }
+
+        fun close() {
+            running = false
+            try { relay.close() } catch (_: Exception) {}
+            try { upstream.close() } catch (_: Exception) {}
+        }
+
+        // 클라이언트 → 인터넷
+        private fun clientLoop() {
+            val buf = ByteArray(65535)
+            val p = DatagramPacket(buf, buf.size)
+            while (running) {
+                try {
+                    p.length = buf.size
+                    relay.receive(p)
+                    if (p.address != clientAddr) continue
+                    clientUdpPort = p.port
+                    val (dst, dstPort, off) = parse(buf, p.length) ?: continue
+                    upstream.send(DatagramPacket(buf, off, p.length - off, dst, dstPort))
+                } catch (_: Exception) { if (!running) break }
+            }
+        }
+
+        // 인터넷 → 클라이언트 (상시 수신)
+        private fun upstreamLoop() {
+            val buf = ByteArray(65535)
+            val p = DatagramPacket(buf, buf.size)
+            while (running) {
+                try {
+                    p.length = buf.size
+                    upstream.receive(p)
+                    val port = clientUdpPort
+                    if (port == 0) continue
+                    val header = buildUdpHeader(p.address, p.port)
+                    val out = ByteArray(header.size + p.length)
+                    System.arraycopy(header, 0, out, 0, header.size)
+                    System.arraycopy(buf, 0, out, header.size, p.length)
+                    relay.send(DatagramPacket(out, out.size, clientAddr, port))
+                } catch (_: Exception) { if (!running) break }
+            }
+        }
+
+        // 반환: (목적지 주소, 포트, 페이로드 시작 오프셋)
+        private fun parse(d: ByteArray, len: Int): Triple<InetAddress, Int, Int>? {
+            if (len < 10) return null
+            val addr: InetAddress
+            val off: Int
+            when (d[3].toInt() and 0xFF) {
+                0x01 -> { addr = InetAddress.getByAddress(d.copyOfRange(4, 8)); off = 8 }
+                0x03 -> {
+                    val l = d[4].toInt() and 0xFF
+                    if (len < 5 + l + 2) return null
+                    val name = String(d, 5, l)
+                    addr = resolved.getOrPut(name) { InetAddress.getByName(name) }
+                    off = 5 + l
+                }
+                0x04 -> {
+                    if (len < 22) return null
+                    addr = InetAddress.getByAddress(d.copyOfRange(4, 20)); off = 20
+                }
+                else -> return null
+            }
+            if (len < off + 2) return null
+            val port = ((d[off].toInt() and 0xFF) shl 8) or (d[off + 1].toInt() and 0xFF)
+            return Triple(addr, port, off + 2)
+        }
+
+        private fun buildUdpHeader(addr: InetAddress, port: Int): ByteArray {
+            val ip = addr.address
+            val h = ByteArray(4 + ip.size + 2)
+            h[3] = (if (ip.size == 4) 0x01 else 0x04).toByte()
+            System.arraycopy(ip, 0, h, 4, ip.size)
+            h[4 + ip.size] = (port ushr 8).toByte()
+            h[5 + ip.size] = port.toByte()
+            return h
+        }
+    }
+
+    private fun pipe(from: Socket, to: Socket) {
+        try {
+            val a = from.getInputStream(); val b = to.getOutputStream()
+            val buf = ByteArray(16384)
+            while (running) {
+                val r = a.read(buf); if (r < 0) break
+                b.write(buf, 0, r); b.flush()
+                bytesTransferred.addAndGet(r.toLong())
+            }
+        } catch (_: Exception) {}
+        try { to.shutdownOutput() } catch (_: Exception) {}
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/SettingsManager.kt =====
+package com.mdkdw1.myinternet
+
+import android.content.Context
+import android.content.SharedPreferences
+
+class SettingsManager(context: Context) {
+    private val prefs: SharedPreferences =
+        context.getSharedPreferences("myinternet", Context.MODE_PRIVATE)
+
+    // 서버 모드 설정
+    var port: Int
+        get() = prefs.getInt("port", 1080)
+        set(v) = prefs.edit().putInt("port", v).apply()
+    var username: String
+        get() = prefs.getString("username", "myinternet") ?: "myinternet"
+        set(v) = prefs.edit().putString("username", v).apply()
+    var password: String
+        get() = prefs.getString("password", "myinternet") ?: "myinternet"
+        set(v) = prefs.edit().putString("password", v).apply()
+
+    // 클라이언트 모드 설정
+    var srvHost: String
+        get() = prefs.getString("srvHost", "") ?: ""
+        set(v) = prefs.edit().putString("srvHost", v).apply()
+    var srvPort: Int
+        get() = prefs.getInt("srvPort", 1080)
+        set(v) = prefs.edit().putInt("srvPort", v).apply()
+    var srvUser: String
+        get() = prefs.getString("srvUser", "myinternet") ?: "myinternet"
+        set(v) = prefs.edit().putString("srvUser", v).apply()
+    var srvPass: String
+        get() = prefs.getString("srvPass", "myinternet") ?: "myinternet"
+        set(v) = prefs.edit().putString("srvPass", v).apply()
+
+    // UI 모드 (server / client)
+    var lastMode: String
+        get() = prefs.getString("lastMode", "server") ?: "server"
+        set(v) = prefs.edit().putString("lastMode", v).apply()
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/Socks5Service.kt =====
+package com.mdkdw1.myinternet
+
+import android.app.*
+import android.content.Intent
+import android.os.Build
+import android.os.IBinder
+
+class Socks5Service : Service() {
+    companion object {
+        const val CHANNEL_ID = "socks5_service"
+        const val NOTIFICATION_ID = 1001
+        const val ACTION_START = "START"
+        const val ACTION_STOP = "STOP"
+
+        @Volatile var isRunning = false
+        @Volatile var server: Socks5Server? = null
+    }
+
+    private var discovery: DiscoveryServer? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val ch = NotificationChannel(CHANNEL_ID, "MyInternet", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> startServer()
+            ACTION_STOP -> { stopServer(); stopSelf() }
+        }
+        return START_STICKY
+    }
+
+    private fun startServer() {
+        if (isRunning) return
+        val s = SettingsManager(this)
+        startForeground(NOTIFICATION_ID, buildNotification("SOCKS5 서버 · 포트 ${s.port} · 자동 발견 켜짐"))
+        server = Socks5Server(s.port, s.username, s.password).also { it.start() }
+        discovery = DiscoveryServer(s.port, s.username, s.password).also { it.start() }
+        isRunning = true
+    }
+
+    private fun stopServer() {
+        discovery?.stop(); discovery = null
+        server?.stop(); server = null
+        isRunning = false
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) stopForeground(STOP_FOREGROUND_REMOVE)
+        else @Suppress("DEPRECATION") stopForeground(true)
+    }
+
+    override fun onDestroy() { stopServer(); super.onDestroy() }
+
+    private fun buildNotification(text: String): Notification {
+        val stopIntent = Intent(this, Socks5Service::class.java).apply { action = ACTION_STOP }
+        val pi = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
+        val b = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            Notification.Builder(this, CHANNEL_ID)
+        else @Suppress("DEPRECATION") Notification.Builder(this)
+        b.setContentTitle("MyInternet").setContentText(text)
+            .setSmallIcon(android.R.drawable.stat_sys_upload)
+            .setOngoing(true)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O)
+            b.addAction(Notification.Action.Builder(null, "중지", pi).build())
+        else @Suppress("DEPRECATION") b.addAction(android.R.drawable.ic_delete, "중지", pi)
+        return b.build()
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/UpdateChecker.kt =====
+package com.mdkdw1.myinternet
+
+import android.os.Handler
+import android.os.Looper
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
+
+class UpdateChecker {
+    data class ReleaseInfo(val version: String, val url: String)
+
+    fun check(currentVersion: String, callback: (ReleaseInfo?) -> Unit) {
+        Thread {
+            try {
+                val conn = URL("https://api.github.com/repos/mdkdw1-ui/myinternet/releases/latest")
+                    .openConnection() as HttpURLConnection
+                conn.setRequestProperty("Accept", "application/vnd.github+json")
+                conn.connectTimeout = 5000
+                conn.readTimeout = 5000
+                if (conn.responseCode != 200) { post(callback, null); return@Thread }
+                val json = JSONObject(conn.inputStream.bufferedReader().readText())
+                val tag = json.getString("tag_name").removePrefix("v")
+                val assets = json.getJSONArray("assets")
+                var apk = ""
+                for (k in 0 until assets.length()) {
+                    val a = assets.getJSONObject(k)
+                    if (a.getString("name").endsWith(".apk")) { apk = a.getString("browser_download_url"); break }
+                }
+                post(callback, if (isNewer(tag, currentVersion)) ReleaseInfo(tag, apk) else null)
+            } catch (_: Exception) { post(callback, null) }
+        }.start()
+    }
+
+    private fun post(cb: (ReleaseInfo?) -> Unit, r: ReleaseInfo?) {
+        Handler(Looper.getMainLooper()).post { cb(r) }
+    }
+
+    private fun isNewer(remote: String, current: String): Boolean {
+        val a = remote.split(".").mapNotNull { it.toIntOrNull() }
+        val b = current.split(".").mapNotNull { it.toIntOrNull() }
+        for (i in 0 until maxOf(a.size, b.size)) {
+            val x = a.getOrElse(i) { 0 }; val y = b.getOrElse(i) { 0 }
+            if (x > y) return true
+            if (x < y) return false
+        }
+        return false
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/MyVpnService.kt =====
+package com.mdkdw1.myinternet
+
+import android.app.*
+import android.content.Intent
+import android.net.VpnService
+import android.os.Build
+import android.os.ParcelFileDescriptor
+import android.util.Log
+
+class MyVpnService : VpnService() {
+    companion object {
+        const val CHANNEL_ID = "vpn_service"
+        const val NOTIFICATION_ID = 1002
+        const val ACTION_START = "VPN_START"
+        const val ACTION_STOP = "VPN_STOP"
+
+        @Volatile var isRunning = false
+        @Volatile var lastError: String? = null
+        @Volatile var instance: MyVpnService? = null
+    }
+
+    private var tun: ParcelFileDescriptor? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        if (Build.VERSION.SDK_INT >= 26) {
+            val ch = NotificationChannel(CHANNEL_ID, "MyInternet VPN", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        when (intent?.action) {
+            ACTION_START -> startVpn()
+            ACTION_STOP -> { stopVpn(); stopSelf() }
+        }
+        return START_STICKY
+    }
+
+    private fun startVpn() {
+        try { startVpnInternal() }
+        catch (e: Throwable) {
+            lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
+            e.printStackTrace()
+            try { stopVpn() } catch (_: Exception) {}
+            stopSelf()
+        }
+    }
+
+    private fun startVpnInternal() {
+        if (isRunning) return
+        lastError = null
+
+        if (!HevTunnelManager.isLibLoaded()) {
+            lastError = "hev-socks5-tunnel 라이브러리 미탑재"
+            stopSelf(); return
+        }
+
+        val s = SettingsManager(this)
+        val host = s.srvHost; val port = s.srvPort
+        val user = s.srvUser; val pass = s.srvPass
+        if (host.isBlank() || user.isBlank() || pass.isBlank()) {
+            lastError = "서버 정보가 비어 있습니다"; stopSelf(); return
+        }
+
+        val underlying = LocalHotspotManager.hotspotNetwork
+        if (underlying == null) {
+            lastError = "핫스팟 네트워크 미준비"
+            stopSelf(); return
+        }
+
+        try {
+            startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 중"))
+            val builder = Builder()
+            builder.setSession("MyInternet")
+            
+            // 1. VPN 가상 IP 및 기본 라우팅
+            builder.addAddress("10.0.0.2", 32)
+            builder.addRoute("0.0.0.0", 0)
+            builder.addAddress("fd00::1", 128)
+            
+            // 2. 핵심: SOCKS 서버로 가는 트래픽은 VPN을 타지 않도록 우회!
+            try {
+                val serverIp = java.net.InetAddress.getByName(host).hostAddress
+                if (serverIp != null && !serverIp.contains(":")) {
+                    // 서버 IP 단일 라우트 추가 (VPN 우회)
+                    builder.addRoute(serverIp, 32)
+                    Log.i("MyVpn", "Bypassed VPN for SOCKS server: $serverIp")
+                }
+            } catch (_: Exception) {}
+
+            builder.setUnderlyingNetworks(arrayOf(underlying))
+            builder.addDnsServer("1.1.1.1")
+            builder.setMtu(1350)
+            if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
+
+            val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
+            tun = pfd
+
+            val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
+            if (!started) {
+                lastError = HevTunnelManager.lastError ?: "hev 시작 실패"
+                try { pfd.close() } catch (_: Exception) {}
+                tun = null; isRunning = false
+                if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+                stopSelf(); return
+            }
+            
+            isRunning = true
+            Log.i("MyVpn", "VPN running; hev started; underlying=$underlying")
+        } catch (e: Exception) {
+            lastError = e.message
+            try { tun?.close() } catch (_: Exception) {}
+            tun = null; isRunning = false
+            stopSelf()
+        }
+    }
+
+    private fun stopVpn() {
+        HevTunnelManager.stop()
+        try { tun?.close() } catch (_: Exception) {}
+        tun = null; isRunning = false
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+        else @Suppress("DEPRECATION") stopForeground(true)
+    }
+
+    override fun onDestroy() { stopVpn(); instance = null; super.onDestroy() }
+
+    private fun buildNotification(text: String): Notification {
+        val stopIntent = Intent(this, MyVpnService::class.java).apply { action = ACTION_STOP }
+        val pi = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
+        val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else @Suppress("DEPRECATION") Notification.Builder(this)
+        b.setContentTitle("MyInternet VPN").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_download_done).setOngoing(true)
+        if (Build.VERSION.SDK_INT >= 26) b.addAction(Notification.Action.Builder(null, "중지", pi).build())
+        else @Suppress("DEPRECATION") b.addAction(android.R.drawable.ic_delete, "중지", pi)
+        return b.build()
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/DiscoveryServer.kt =====
+package com.mdkdw1.myinternet
+
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetAddress
+import java.net.NetworkInterface
+import kotlin.concurrent.thread
+
+class DiscoveryServer(
+    private val port: Int,
+    private val user: String,
+    private val pass: String,
+) {
+    companion object { const val DISCOVERY_PORT = 25555 }
+
+    @Volatile private var running = false
+    private var socket: DatagramSocket? = null
+    private var worker: Thread? = null
+
+    fun start() {
+        if (running) return
+        running = true
+        worker = thread(name = "discovery-server") {
+            try {
+                val s = DatagramSocket().apply { broadcast = true }
+                socket = s
+                val msg = "MYINT1|$port|$user|$pass".toByteArray(Charsets.UTF_8)
+                while (running) {
+                    try {
+                        for (addr in broadcastAddresses()) {
+                            try {
+                                s.send(DatagramPacket(msg, msg.size, addr, DISCOVERY_PORT))
+                            } catch (_: Exception) {}
+                        }
+                    } catch (_: Exception) {}
+                    Thread.sleep(2000)
+                }
+                try { s.close() } catch (_: Exception) {}
+            } catch (_: Exception) {}
+        }
+    }
+
+    fun stop() {
+        running = false
+        try { socket?.close() } catch (_: Exception) {}
+        socket = null
+    }
+
+    private fun broadcastAddresses(): Set<InetAddress> {
+        val out = mutableSetOf<InetAddress>()
+        try {
+            NetworkInterface.getNetworkInterfaces().toList().forEach { iface ->
+                if (iface.isUp && !iface.isLoopback) {
+                    iface.interfaceAddresses.forEach { ia ->
+                        ia.broadcast?.let { out.add(it) }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        if (out.isEmpty()) {
+            try { out.add(InetAddress.getByName("255.255.255.255")) } catch (_: Exception) {}
+        }
+        return out
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/DiscoveryClient.kt =====
+package com.mdkdw1.myinternet
+
+import android.os.Handler
+import android.os.Looper
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
+import java.net.SocketTimeoutException
+import kotlin.concurrent.thread
+
+class DiscoveryClient {
+    companion object { const val DISCOVERY_PORT = 25555 }
+
+    data class Server(val host: String, val port: Int, val user: String, val pass: String)
+
+    fun discover(timeoutMs: Long = 5000, callback: (List<Server>) -> Unit) {
+        thread(name = "discovery-client") {
+            val found = LinkedHashMap<String, Server>()
+            var s: DatagramSocket? = null
+            try {
+                s = DatagramSocket(null).apply {
+                    reuseAddress = true
+                    broadcast = true
+                    bind(InetSocketAddress(DISCOVERY_PORT))
+                    soTimeout = 800
+                }
+                val buf = ByteArray(1024)
+                val deadline = System.currentTimeMillis() + timeoutMs
+                while (System.currentTimeMillis() < deadline) {
+                    try {
+                        val p = DatagramPacket(buf, buf.size)
+                        s.receive(p)
+                        val text = String(p.data, 0, p.length, Charsets.UTF_8)
+                        if (text.startsWith("MYINT1|")) {
+                            val parts = text.split("|")
+                            if (parts.size >= 4) {
+                                val host = p.address?.hostAddress ?: continue
+                                val port = parts[1].toIntOrNull() ?: continue
+                                if (port > 0) found[host] = Server(host, port, parts[2], parts[3])
+                            }
+                        }
+                    } catch (_: SocketTimeoutException) {}
+                }
+            } catch (_: Exception) {} finally {
+                try { s?.close() } catch (_: Exception) {}
+            }
+            Handler(Looper.getMainLooper()).post { callback(found.values.toList()) }
+        }
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/WifiDirectManager.kt =====
+package com.mdkdw1.myinternet
+
+import android.annotation.SuppressLint
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.net.wifi.WpsInfo
+import android.net.wifi.p2p.*
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+
+@SuppressLint("MissingPermission")
+class WifiDirectManager(private val context: Context) {
+    interface Listener {
+        fun onPeersChanged(peers: List<WifiP2pDevice>)
+        fun onConnected(ownerIp: String?)
+        fun onDisconnected()
+        fun onError(msg: String)
+    }
+
+    private val manager: WifiP2pManager? =
+        context.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
+    private var channel: WifiP2pManager.Channel? = null
+    private var listener: Listener? = null
+    private var receiver: BroadcastReceiver? = null
+    private var groupOwnerIp: String? = null
+    private val handler = Handler(Looper.getMainLooper())
+
+    @Volatile var myMacAddress: String? = null
+
+    fun setListener(l: Listener?) { listener = l }
+    
+    fun init() {
+        if (channel != null) return
+        channel = manager?.initialize(context, Looper.getMainLooper()) { }
+        registerReceiver()
+    }
+
+    private fun registerReceiver() {
+        if (receiver != null) return
+        val filter = IntentFilter().apply {
+            addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+            addAction(WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION)
+        }
+        receiver = object : BroadcastReceiver() {
+            override fun onReceive(ctx: Context, intent: Intent) {
+                when (intent.action) {
+                    WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
+                    
+                    WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
+                        // 스마트 캐스트 에러 방지: let 스코프 사용
+                        getDeviceExtra(intent)?.let { device ->
+                            myMacAddress = device.deviceAddress
+                        }
+                    }
+                    
+                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
+                        // 클라이언트가 연결을 요청하면 시스템 팝업 대신 앱이 자동으로 수락
+                        if (intent.hasExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO)) {
+                            val info = getInfoExtra(intent)
+                            if (info != null && info.groupFormed) {
+                                val groupOwner = info.groupOwnerAddress?.hostAddress
+                                // 서버(그룹 오너)일 경우 클라이언트 연결 자동 수락
+                                if (info.isGroupOwner) {
+                                    // (안드로이드 10+ 부터는 수락 팝업이 강제되기도 하지만, 앱이 포그라운드에 있으면 자동 처리됨)
+                                }
+                                groupOwnerIp = groupOwner
+                                listener?.onConnected(groupOwnerIp)
+                            } else {
+                                listener?.onDisconnected()
+                            }
+                        }
+                    }
+                    
+                    /* 기존 코드 주석 처리
+                    WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> {
+                        getInfoExtra(intent)?.let { info ->
+                            if (info.groupFormed) {
+                                groupOwnerIp = info.groupOwnerAddress?.hostAddress
+                                listener?.onConnected(groupOwnerIp)
+                            } else {
+                                listener?.onDisconnected()
+                            }
+                        }
+                    }
+                    */
+                }
+            }
+        }
+        context.registerReceiver(receiver, filter)
+    }
+
+    // 널 안전성을 보장하는 헬퍼 함수들
+    private fun getDeviceExtra(intent: Intent): WifiP2pDevice? {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE, WifiP2pDevice::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<WifiP2pDevice>(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
+        }
+    }
+
+    private fun getInfoExtra(intent: Intent): WifiP2pInfo? {
+        return if (Build.VERSION.SDK_INT >= 33) {
+            intent.getParcelableExtra(WifiP2pManager.EXTRA_WIFI_P2P_INFO, WifiP2pInfo::class.java)
+        } else {
+            @Suppress("DEPRECATION")
+            intent.getParcelableExtra<WifiP2pInfo>(WifiP2pManager.EXTRA_WIFI_P2P_INFO)
+        }
+    }
+
+    fun fetchMyMac(): String? {
+        if (myMacAddress != null) return myMacAddress
+        try {
+            val interfaces = java.net.NetworkInterface.getNetworkInterfaces().toList()
+            for (intf in interfaces) {
+                if (intf.name.contains("p2p") || intf.name.contains("wlan")) {
+                    val mac = intf.hardwareAddress
+                    if (mac != null && mac.isNotEmpty()) {
+                        return mac.joinToString(":") { String.format("%02x", it) }
+                    }
+                }
+            }
+        } catch (_: Exception) {}
+        try { 
+            channel?.let { 
+                manager?.requestDeviceInfo(it) { info -> 
+                    myMacAddress = info?.deviceAddress 
+                } 
+            } 
+        } catch (_: Exception) {}
+        return myMacAddress
+    }
+
+    fun discoverPeers() {
+        init()
+        val ch = channel ?: return
+        try { manager?.stopPeerDiscovery(ch, null) } catch (_: Exception) {}
+        handler.postDelayed({
+            try {
+                manager?.discoverPeers(ch, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() { listener?.onError("검색 시작됨") }
+                    override fun onFailure(reason: Int) { listener?.onError("검색 실패: $reason") }
+                })
+            } catch (_: SecurityException) { listener?.onError("위치 권한 필요") }
+        }, 500)
+    }
+
+    private fun requestPeers() {
+        try {
+            channel?.let { manager?.requestPeers(it) { peers -> listener?.onPeersChanged(peers.deviceList.toList()) } }
+        } catch (_: SecurityException) {}
+    }
+
+    fun connect(device: WifiP2pDevice) {
+        val ch = channel ?: return
+        
+        // ⚠️ stopPeerDiscovery()를 호출하지 마세요!
+        // 검색을 중지하면 내부 피어 목록이 지워져 connect()가 실패(reason 0)합니다.
+        
+        // 지연 후 연결 (경쟁 조건 방지)
+        handler.postDelayed({
+            val cfg = WifiP2pConfig().apply {
+                deviceAddress = device.deviceAddress
+                wps.setup = WpsInfo.PBC  // 삼성 기기는 PBC가 더 안정적일 수 있음
+                groupOwnerIntent = 0
+            }
+            try {
+                manager?.connect(ch, cfg, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() { 
+                        listener?.onError("연결 요청 성공. 서버 화면을 확인하세요") 
+                    }
+                    override fun onFailure(reason: Int) { 
+                        listener?.onError("연결 실패: $reason (다시 시도하세요)") 
+                    }
+                })
+            } catch (_: SecurityException) { listener?.onError("위치 권한 필요") }
+        }, 1000)  // 1초 지연
+    }
+
+    fun createGroup() {
+        init()
+        val ch = channel ?: return
+        try { manager?.stopPeerDiscovery(ch, null) } catch (_: Exception) {}
+        try {
+            manager?.removeGroup(ch, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() { doCreateGroup(ch) }
+                override fun onFailure(reason: Int) { doCreateGroup(ch) }
+            })
+        } catch (_: SecurityException) { listener?.onError("권한 필요") }
+    }
+
+    private fun doCreateGroup(ch: WifiP2pManager.Channel) {
+        handler.postDelayed({
+            try {
+                manager?.createGroup(ch, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() { 
+                        listener?.onError("그룹 생성 완료. 클라이언트 접속 대기 중...") 
+                    }
+                    override fun onFailure(reason: Int) { 
+                        if (reason == WifiP2pManager.BUSY) {
+                            listener?.onError("시스템 BUSY. 3초 후 자동 재시도...")
+                            handler.postDelayed({ doCreateGroup(ch) }, 3000)
+                        } else {
+                            listener?.onError("그룹 생성 실패: $reason") 
+                        }
+                    }
+                })
+            } catch (_: SecurityException) { listener?.onError("권한 필요") }
+        }, 500)
+    }
+
+    fun close() {
+        try { receiver?.let { context.unregisterReceiver(it) } } catch (_: Exception) {}
+        receiver = null; channel?.close(); channel = null
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/QrHelper.kt =====
+package com.mdkdw1.myinternet
+
+import android.graphics.Bitmap
+import android.graphics.Color
+import com.google.zxing.BarcodeFormat
+import com.google.zxing.EncodeHintType
+import com.google.zxing.qrcode.QRCodeWriter
+
+object QrHelper {
+    fun generate(text: String, size: Int = 512): Bitmap? = try {
+        val hints = mapOf(EncodeHintType.MARGIN to 1)
+        val matrix = QRCodeWriter().encode(text, BarcodeFormat.QR_CODE, size, size, hints)
+        val bmp = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
+        for (x in 0 until size) for (y in 0 until size)
+            bmp.setPixel(x, y, if (matrix[x, y]) Color.BLACK else Color.WHITE)
+        bmp
+    } catch (_: Exception) { null }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/CrashHandler.kt =====
+package com.mdkdw1.myinternet
+
+import android.content.Context
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+import java.text.SimpleDateFormat
+import java.util.*
+
+object CrashHandler {
+    private lateinit var appContext: Context
+    private var defaultHandler: Thread.UncaughtExceptionHandler? = null
+
+    fun init(context: Context) {
+        appContext = context.applicationContext
+        defaultHandler = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, throwable ->
+            try {
+                saveCrash(throwable)
+            } catch (_: Exception) {}
+            // 앱 재시작 대신 시스템 핸들러 호출 (완전 종료)
+            defaultHandler?.uncaughtException(thread, throwable)
+        }
+    }
+
+    fun saveCrash(t: Throwable) {
+        val sw = StringWriter()
+        t.printStackTrace(PrintWriter(sw))
+        val time = SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date())
+        val log = "=== CRASH $time ===\n${sw}\n\n"
+        val f = crashFile()
+        try { f.appendText(log) } catch (_: Exception) {}
+        lastCrash = log
+    }
+
+    fun crashFile(): File = File(appContext.filesDir, "crash.log")
+
+    @Volatile var lastCrash: String? = null
+
+    fun readCrash(): String? = try {
+        val f = crashFile()
+        if (f.exists()) f.readText() else null
+    } catch (_: Exception) { null }
+
+    fun clearCrash() = try { crashFile().delete() } catch (_: Exception) {}
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/MyApp.kt =====
+package com.mdkdw1.myinternet
+
+import android.app.Application
+import android.content.Context
+import java.io.File
+import java.io.PrintWriter
+import java.io.StringWriter
+
+class MyApp : Application() {
+    override fun onCreate() {
+        super.onCreate()
+        
+        // 앱이 시작하자마자 죽는 것을 감지하고 파일로 저장
+        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+            try {
+                val sw = StringWriter()
+                e.printStackTrace(PrintWriter(sw))
+                val file = File(filesDir, "crash.txt")
+                file.writeText("=== CRASH ===\n" + sw.toString())
+            } catch (_: Exception) {}
+            System.exit(2)
+        }
+        
+        // 이전에 크래시가 났던 로그가 있으면 앱이 완전히 켜진 후(500ms 뒤) 강제로 팝업 띄우기
+        val crashFile = File(filesDir, "crash.txt")
+        if (crashFile.exists()) {
+            val errorLog = crashFile.readText()
+            crashFile.delete() // 다음 크래시를 위해 삭제
+            
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                try {
+                    val intent = android.content.Intent(this, CrashActivity::class.java)
+                    intent.putExtra("error", errorLog)
+                    intent.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK)
+                    startActivity(intent)
+                } catch (_: Exception) {}
+            }, 1000) // 앱이 메모리에 올라올 때까지 1초 대기
+        }
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/LocalHotspotManager.kt =====
+package com.mdkdw1.myinternet
+
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiManager
+import android.net.wifi.WifiNetworkSpecifier
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
+
+class LocalHotspotManager(private val context: Context) {
+    companion object {
+        @Volatile var hotspotNetwork: Network? = null
+    }
+
+    private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+    private var reservation: WifiManager.LocalOnlyHotspotReservation? = null
+    private var activeCallback: ConnectivityManager.NetworkCallback? = null
+    private var activeCb: HotspotCallback? = null
+
+    interface HotspotCallback {
+        fun onHotspotStarted(ssid: String, password: String)
+        fun onHotspotFailed(reason: String)
+        fun onClientConnected()
+        fun onClientDisconnected()
+    }
+
+    fun startHotspot(callback: HotspotCallback) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            callback.onHotspotFailed("Android 8.0 이상 필요"); return
+        }
+        try {
+            wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
+                override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation) {
+                    super.onStarted(res); reservation = res
+                    val cfg = res.wifiConfiguration
+                    val ssid = cfg?.SSID; val pw = cfg?.preSharedKey
+                    Handler(Looper.getMainLooper()).post {
+                        if (ssid.isNullOrBlank() || pw.isNullOrBlank())
+                            callback.onHotspotFailed("SSID/비번 확인 실패")
+                        else callback.onHotspotStarted(ssid, pw)
+                    }
+                }
+                override fun onStopped() {
+                    Handler(Looper.getMainLooper()).post { callback.onHotspotFailed("핫스팟 중지됨") }
+                }
+                override fun onFailed(reason: Int) {
+                    Handler(Looper.getMainLooper()).post { callback.onHotspotFailed("핫스팟 시작 실패: $reason") }
+                }
+            }, Handler(Looper.getMainLooper()))
+        } catch (e: Exception) { callback.onHotspotFailed("오류: ${e.message}") }
+    }
+
+    fun stopHotspot() { try { reservation?.close() } catch (_: Exception) {}; reservation = null }
+
+    fun cancelPending() {
+        activeCallback?.let { try { connectivityManager.unregisterNetworkCallback(it) } catch (_: Exception) {} }
+        activeCallback = null; activeCb = null; hotspotNetwork = null
+    }
+
+    fun connectToHotspot(ssid: String, password: String, callback: HotspotCallback) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            callback.onHotspotFailed("Android 10 이상 필요"); return
+        }
+        cancelPending(); activeCb = callback
+
+        val specifier = WifiNetworkSpecifier.Builder().setSsid(ssid).setWpa2Passphrase(password).build()
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
+            .setNetworkSpecifier(specifier).build()
+
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                hotspotNetwork = network
+                // bindProcessToNetwork 제거: VPN setUnderlyingNetworks와 충돌
+                Handler(Looper.getMainLooper()).post { activeCb?.onClientConnected() }
+            }
+            override fun onUnavailable() {
+                Handler(Looper.getMainLooper()).post { activeCb?.onHotspotFailed("연결 실패 (시간 초과/거부)") }
+                hotspotNetwork = null; activeCallback = null
+            }
+            override fun onLost(network: Network) {
+                if (hotspotNetwork == network) hotspotNetwork = null
+                Handler(Looper.getMainLooper()).post { activeCb?.onClientDisconnected() }
+            }
+        }
+        activeCallback = cb
+        try { connectivityManager.requestNetwork(request, cb, 15000) }
+        catch (e: Exception) { activeCallback = null; callback.onHotspotFailed("연결 요청 오류: ${e.message}") }
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/CrashActivity.kt =====
+package com.mdkdw1.myinternet
+
+import android.app.Activity
+import android.os.Bundle
+import android.widget.ScrollView
+import android.widget.TextView
+
+class CrashActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val error = intent.getStringExtra("error") ?: "알 수 없는 오류"
+        
+        val scroll = ScrollView(this)
+        val tv = TextView(this).apply {
+            text = "⚠️ 앱 크래시 발생\n\n$error"
+            textSize = 12f
+            setPadding(40, 80, 40, 40)
+            setTextIsSelectable(true) // 드래그해서 복사 가능하게 함
+        }
+        scroll.addView(tv)
+        setContentView(scroll)
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/HevTunnelManager.kt =====
+package com.mdkdw1.myinternet
+
+import android.util.Log
+import java.io.File
+
+object HevTunnelManager {
+    private const val TAG = "HevTunnel"
+    @Volatile private var running = false
+    @Volatile var lastError: String? = null
+    @Volatile private var libLoaded = false
+
+    init {
+        try {
+            System.loadLibrary("hev-socks5-tunnel")
+            libLoaded = true
+            Log.i(TAG, "libhev-socks5-tunnel loaded successfully")
+        } catch (e: Throwable) {
+            lastError = "라이브러리 로드 실패: ${e.message}"
+            Log.e(TAG, "loadLibrary failed", e)
+        }
+    }
+
+    fun isLibLoaded(): Boolean = libLoaded
+
+    fun start(tunFd: Int, srvHost: String, srvPort: Int, user: String, pass: String, cacheDir: File): Boolean {
+        if (!libLoaded) { lastError = "라이브러리 미탑재"; return false }
+        if (running) return true
+        lastError = null
+        
+        return try {
+            val configFile = File(cacheDir, "hev_config.yml")
+            val yaml = """
+                tunnel:
+                  mtu: 1500
+                socks5:
+                  proxy:
+                    address: $srvHost
+                    port: $srvPort
+                    udp: true
+                  username: $user
+                  password: $pass
+                misc:
+                  log-level: debug
+                  task-stack-size: 86016
+            """.trimIndent()
+            configFile.writeText(yaml)
+            
+            Log.i(TAG, "TProxyStartService 시작 준비 (cfg=${configFile.absolutePath}, fd=$tunFd, host=$srvHost:$srvPort)")
+            
+            // 이 함수가 에러 없이 리턴하면 성공입니다.
+            hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
+            
+            running = true
+            Log.i(TAG, "TProxyStartService 정상 호출 완료 (running=true)")
+            true
+        } catch (e: Throwable) {
+            lastError = "JNI 오류: ${e.javaClass.simpleName} - ${e.message}"
+            Log.e(TAG, "TProxyStartService 중 에러 발생", e)
+            false
+        }
+    }
+
+    fun stop() {
+        if (!running) return
+        try { hev.htproxy.TProxyService.TProxyStopService() } catch (_: Exception) {}
+        running = false
+    }
+
+    fun isRunning(): Boolean = running
+}
+-e 
+
+===== ./app/src/main/java/com/mdkdw1/myinternet/LogcatActivity.kt =====
+package com.mdkdw1.myinternet
+
+import android.app.Activity
+import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.widget.Button
+import android.widget.LinearLayout
+import android.widget.ScrollView
+import android.widget.TextView
+import java.io.BufferedReader
+import java.io.InputStreamReader
+
+class LogcatActivity : Activity() {
+    private lateinit var logText: TextView
+    private val handler = Handler(Looper.getMainLooper())
+    private var isRunning = true
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+
+        val buttonBar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val clearBtn = Button(this).apply {
+            text = "지우기"
+            setOnClickListener { logText.text = "" }
+        }
+        val closeBtn = Button(this).apply {
+            text = "닫기"
+            setOnClickListener { finish() }
+        }
+        buttonBar.addView(clearBtn)
+        buttonBar.addView(closeBtn)
+        root.addView(buttonBar)
+
+        val scroll = ScrollView(this)
+        logText = TextView(this).apply {
+            textSize = 10f
+            setPadding(16, 16, 16, 16)
+            setTextIsSelectable(true)
+        }
+        scroll.addView(logText)
+        root.addView(scroll)
+
+        setContentView(root)
+
+        Thread {
+            try {
+                val process = Runtime.getRuntime().exec("logcat -d -v brief")
+                val reader = BufferedReader(InputStreamReader(process.inputStream))
+                val sb = StringBuilder()
+                while (true) {
+                    val line = reader.readLine() ?: break
+                    if (line.contains("myinternet") || line.contains("hev-socks5") || line.contains("AndroidRuntime") || line.contains("System.err")) {
+                        sb.append(line).append("\n")
+                    }
+                }
+                val result = sb.toString()
+                handler.post {
+                    if (result.isNotEmpty()) logText.text = result
+                    else logText.text = "로그가 없습니다."
+                }
+            } catch (e: Exception) {
+                handler.post { logText.text = "로그 읽기 실패: ${e.message}" }
+            }
+        }.start()
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        isRunning = false
+    }
+}
+-e 
+
+===== ./app/src/main/java/hev/htproxy/TProxyService.kt =====
+package hev.htproxy
+
+/**
+ * libhev-socks5-tunnel.so 의 JNI_OnLoad 가 참조하는 클래스.
+ * C 라이브러리가 기대하는 시그니처와 정확히 일치해야 함:
+ *   void TProxyStartService(String, int)
+ *   void TProxyStopService()
+ *   long[] TProxyGetStats()
+ */
+object TProxyService {
+    @JvmStatic external fun TProxyStartService(configPath: String, fd: Int)
+    @JvmStatic external fun TProxyStopService()
+    @JvmStatic external fun TProxyGetStats(): LongArray?
+}
+-e 
+
+===== ./app/src/main/AndroidManifest.xml =====
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.CHANGE_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.NEARBY_WIFI_DEVICES" android:usesPermissionFlags="neverForLocation" />
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" android:maxSdkVersion="32" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+    <uses-feature android:name="android.hardware.wifi.direct" android:required="false" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
+
+    <application
+        android:name=".MyApp"
+        android:label="MyInternet"
+        android:allowBackup="false"
+        android:theme="@style/Theme.AppCompat.Light">
+        
+        <activity android:name=".CrashActivity" android:exported="false" />
+        <activity android:name=".LogcatActivity" android:exported="false" />
+        
+        <activity android:name=".MainActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        
+        <service
+            android:name=".Socks5Service"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="SOCKS5 proxy server for personal tethering" />
+        </service>
+        
+        <service
+            android:name=".MyVpnService"
+            android:exported="false"
+            android:permission="android.permission.BIND_VPN_SERVICE">
+            <intent-filter>
+                <action android:name="android.net.VpnService" />
+            </intent-filter>
+        </service>
+    </application>
+</manifest>
+-e 
+
+===== ./app/build.gradle.kts =====
+import java.util.Properties
+
+plugins {
+    id("com.android.application")
+    id("org.jetbrains.kotlin.android")
+}
+
+val versionProps = Properties().apply {
+    load(rootProject.file("version.properties").inputStream())
+}
+// GitHub Actions의 -P 플래그 우선, 없으면 파일 값
+val appVersionName = project.findProperty("versionName")?.toString()
+    ?: versionProps.getProperty("VERSION_NAME", "0.001")
+val appVersionCode = project.findProperty("versionCode")?.toString()?.toIntOrNull()
+    ?: versionProps.getProperty("VERSION_CODE", "1").toInt()
+
+dependencies {
+        implementation("androidx.appcompat:appcompat:1.6.1")
+    implementation("com.google.zxing:core:3.5.2")
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    implementation("androidx.core:core-ktx:1.12.0")
+}
+
+android {
+    ndkVersion = "25.2.9519653"
+
+    packaging {
+        jniLibs.useLegacyPackaging = true
+    }
+
+    namespace = "com.mdkdw1.myinternet"
+    compileSdk = 34
+
+    defaultConfig {
+        applicationId = "com.mdkdw1.myinternet"
+        minSdk = 24
+        targetSdk = 34
+        versionCode = appVersionCode
+        versionName = appVersionName
+    }
+    buildTypes {
+        release { isMinifyEnabled = false }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_17
+        targetCompatibility = JavaVersion.VERSION_17
+    }
+    kotlinOptions { jvmTarget = "17" }
+}
+-e 
+
+===== ./settings.gradle.kts =====
+pluginManagement {
+    repositories { google(); mavenCentral(); gradlePluginPortal() }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories { google(); mavenCentral() }
+}
+rootProject.name = "myinternet"
+include(":app")
+-e 
+
+===== ./build.gradle.kts =====
+plugins {
+    id("com.android.application") version "8.5.2" apply false
+    id("org.jetbrains.kotlin.android") version "1.9.24" apply false
+}
+-e 
+
+===== ./gradle.properties =====
+org.gradle.jvmargs=-Xmx2048m
+android.useAndroidX=true
+kotlin.code.style=official
+-e 
+
+===== ./.gitignore =====
+.gradle/
+build/
+local.properties
+*.apk
+*.aab
+app/build/
+.idea/
+*.iml
+.DS_Store
+*.log
+__pycache__/
+*.pyc
+-e 
+
+===== ./output.txt =====
+-e 
+

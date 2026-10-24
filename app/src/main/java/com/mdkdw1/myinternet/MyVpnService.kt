@@ -6,6 +6,8 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.util.Log
+import java.net.InetSocketAddress
+import java.net.Socket
 
 class MyVpnService : VpnService() {
     companion object {
@@ -13,6 +15,7 @@ class MyVpnService : VpnService() {
         const val NOTIFICATION_ID = 1002
         const val ACTION_START = "VPN_START"
         const val ACTION_STOP = "VPN_STOP"
+        private const val TAG = "MyVpn"
 
         @Volatile var isRunning = false
         @Volatile var lastError: String? = null
@@ -42,7 +45,7 @@ class MyVpnService : VpnService() {
         try { startVpnInternal() }
         catch (e: Throwable) {
             lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
-            e.printStackTrace()
+            Log.e(TAG, "Start error", e)
             try { stopVpn() } catch (_: Exception) {}
             stopSelf()
         }
@@ -64,6 +67,12 @@ class MyVpnService : VpnService() {
             lastError = "서버 정보가 비어 있습니다"; stopSelf(); return
         }
 
+        // [추가] VPN을 켜기 전에 서버(핫스팟 망)로 소켓이 닿는지 먼저 테스트
+        if (!testServerConnection(host, port)) {
+            lastError = "SOCKS 서버 접속 불가 ($host:$port) - 서버 앱이 켜져 있는지 확인하세요"
+            stopSelf(); return
+        }
+
         val underlying = LocalHotspotManager.hotspotNetwork
         if (underlying == null) {
             lastError = "핫스팟 네트워크 미준비"
@@ -75,27 +84,30 @@ class MyVpnService : VpnService() {
             val builder = Builder()
             builder.setSession("MyInternet")
             
-            // 1. VPN 가상 IP 및 기본 라우팅
             builder.addAddress("10.0.0.2", 32)
             builder.addRoute("0.0.0.0", 0)
-            builder.addAddress("fd00::1", 128)
             
-            // 2. 핵심: SOCKS 서버(10.204.228.225)로 가는 트래픽은 VPN을 타지 않도록 우회!
+            // [핵심 수정] addRoute(serverIp, 32) 대신, 우리 앱(hev) 자체를 VPN 터널에서 제외시킴!
+            // 이렇게 하면 hev가 SOCKS 서버로 연결할 때 VPN을 타지 않고 핫스팟 와이파이로 직접 나갑니다.
             try {
-                val serverIp = java.net.InetAddress.getByName(host).hostAddress
-                if (serverIp != null && !serverIp.contains(":")) {
-                    builder.addRoute(serverIp, 32)
-                    Log.i("MyVpn", "Bypassed VPN for SOCKS server: $serverIp")
-                }
-            } catch (_: Exception) {}
+                builder.addDisallowedApplication(packageName)
+                Log.i(TAG, "VPN 우회 설정 완료: $packageName")
+            } catch (e: Exception) {
+                Log.w(TAG, "addDisallowedApplication 실패: ${e.message}")
+            }
 
             builder.setUnderlyingNetworks(arrayOf(underlying))
             builder.addDnsServer("1.1.1.1")
-            builder.setMtu(1350)
+            builder.setMtu(HevTunnelManager.MTU) // MTU 통일 (1350)
+            
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
 
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
+
+            // 로컬 바인딩을 위해 앱 프로세스를 핫스팟으로 바인딩
+            val cm = getSystemService(ConnectivityManager::class.java)
+            cm.bindProcessToNetwork(underlying)
 
             val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
             if (!started) {
@@ -105,9 +117,8 @@ class MyVpnService : VpnService() {
                 if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(); return
             }
-            
             isRunning = true
-            Log.i("MyVpn", "VPN running; hev started; underlying=$underlying")
+            Log.i(TAG, "VPN running; hev started; underlying=$underlying")
         } catch (e: Exception) {
             lastError = e.message
             try { tun?.close() } catch (_: Exception) {}
@@ -116,7 +127,23 @@ class MyVpnService : VpnService() {
         }
     }
 
+    private fun testServerConnection(host: String, port: Int): Boolean {
+        return try {
+            val sock = Socket()
+            val n = LocalHotspotManager.hotspotNetwork
+            if (n != null) n.bindSocket(sock) else protect(sock)
+            sock.connect(InetSocketAddress(host, port), 3000)
+            sock.close()
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "사전 연결 테스트 실패: ${e.message}")
+            false
+        }
+    }
+
     private fun stopVpn() {
+        val cm = getSystemService(ConnectivityManager::class.java)
+        try { cm.bindProcessToNetwork(null) } catch (_: Exception) {}
         HevTunnelManager.stop()
         try { tun?.close() } catch (_: Exception) {}
         tun = null; isRunning = false
@@ -124,7 +151,9 @@ class MyVpnService : VpnService() {
         else @Suppress("DEPRECATION") stopForeground(true)
     }
 
-    override fun onDestroy() { stopVpn(); instance = null; super.onDestroy() }
+    override fun onDestroy() {
+        stopVpn(); instance = null; super.onDestroy()
+    }
 
     private fun buildNotification(text: String): Notification {
         val stopIntent = Intent(this, MyVpnService::class.java).apply { action = ACTION_STOP }
