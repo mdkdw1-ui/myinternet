@@ -36,8 +36,10 @@ object HevTunnelManager {
                     address: $srvHost
                     port: $srvPort
                     udp: 'udp'
-                  username: $user
-                  password: $pass
+                  username: '$user'
+                  password: '$pass'
+                misc:
+                  log-level: debug
             """.trimIndent()
             configFile.writeText(yaml)
             Log.i(TAG, "TProxyStartService cfg=${configFile.absolutePath} fd=$tunFd host=$srvHost:$srvPort")
