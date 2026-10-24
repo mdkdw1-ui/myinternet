@@ -76,17 +76,22 @@ class LocalHotspotManager(private val context: Context) {
 
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
+                android.util.Log.i("Hotspot", "onAvailable: $network")
                 hotspotNetwork = network
-                // bindProcessToNetwork 제거: VPN setUnderlyingNetworks와 충돌
                 Handler(Looper.getMainLooper()).post { activeCb?.onClientConnected() }
             }
             override fun onUnavailable() {
+                android.util.Log.w("Hotspot", "onUnavailable")
                 Handler(Looper.getMainLooper()).post { activeCb?.onHotspotFailed("연결 실패 (시간 초과/거부)") }
                 hotspotNetwork = null; activeCallback = null
             }
             override fun onLost(network: Network) {
+                android.util.Log.w("Hotspot", "onLost: $network")
                 if (hotspotNetwork == network) hotspotNetwork = null
                 Handler(Looper.getMainLooper()).post { activeCb?.onClientDisconnected() }
+            }
+            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
+                android.util.Log.i("Hotspot", "onCapabilitiesChanged: $network caps=$caps")
             }
         }
         activeCallback = cb

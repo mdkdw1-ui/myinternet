@@ -245,21 +245,26 @@ class MainActivity : AppCompatActivity() {
                 localHotspot?.connectToHotspot(ssid, pw, object : LocalHotspotManager.HotspotCallback {
                     override fun onHotspotStarted(ssid: String, password: String) {}
                     override fun onHotspotFailed(reason: String) {
+                        android.util.Log.e("MainActivity", "onHotspotFailed: $reason")
                         clientStatusText.text = "연결 실패: $reason"
                         toast("핫스팟 실패: $reason")
                     }
                     override fun onClientConnected() {
-                        val serverIp = findRealGatewayIp() ?: getGatewayIp() ?: qrIp ?: "192.168.43.1"
+                        android.util.Log.i("MainActivity", "onClientConnected fired")
+                        val g1 = findRealGatewayIp()
+                        val g2 = getGatewayIp()
+                        android.util.Log.i("MainActivity", "gateways: findReal=$g1 getGateway=$g2 qrIp=$qrIp")
+                        val serverIp = g1 ?: g2 ?: qrIp ?: "192.168.43.1"
                         clientStatusText.text = "✅ 핫스팟 연결됨. 서버 IP: $serverIp"
-                        android.util.Log.i("MainActivity", "client connected, hotspotNetwork=" + LocalHotspotManager.hotspotNetwork + ", serverIp=" + serverIp)
-                        // [수정] 서버 IP 가 핫스팟 대역(192.168.x / 10.x)인지 확인
                         if (!(serverIp.startsWith("192.168.") || serverIp.startsWith("10."))) {
+                            android.util.Log.e("MainActivity", "invalid serverIp: $serverIp")
                             clientStatusText.text = "⚠️ 서버 IP 가 핫스팟 대역이 아님: $serverIp"
                             toast("서버 IP 확인 실패: $serverIp")
                             return
                         }
                         applyClientConfig(serverIp, 1080, "myinternet", "myinternet")
                         clientStatusText.text = "✅ 핫스팟 연결됨. VPN 강제 연결 중..."
+                        android.util.Log.i("MainActivity", "requestVpn() in 500ms")
                         handler.postDelayed({ requestVpn() }, 500)
                     }
                     override fun onClientDisconnected() { clientStatusText.text = "연결 끊김" }
@@ -368,11 +373,19 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestVpn() {
+        android.util.Log.i("MainActivity", "requestVpn() host=${settings.srvHost} port=${settings.srvPort}")
         if (settings.srvHost.isBlank()) { toast("서버 정보 없음"); return }
         val intent = VpnService.prepare(this)
-        if (intent != null) startActivityForResult(intent, VPN_REQ) else startVpnService()
+        if (intent != null) {
+            android.util.Log.i("MainActivity", "VpnService.prepare returned intent -> show dialog")
+            startActivityForResult(intent, VPN_REQ)
+        } else {
+            android.util.Log.i("MainActivity", "VpnService.prepare null -> startVpnService()")
+            startVpnService()
+        }
     }
     private fun startVpnService() {
+        android.util.Log.i("MainActivity", "startVpnService() called")
         val i = Intent(this, MyVpnService::class.java).apply { action = MyVpnService.ACTION_START }
         if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
         toast("VPN 시작")

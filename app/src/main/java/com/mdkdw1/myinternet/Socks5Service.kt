@@ -37,12 +37,14 @@ class Socks5Service : Service() {
     }
 
     private fun startServer() {
+        android.util.Log.i("Socks5Service", "startServer() called, isRunning=$isRunning")
         if (isRunning) return
         val s = SettingsManager(this)
         startForeground(NOTIFICATION_ID, buildNotification("SOCKS5 서버 · 포트 ${s.port} · 자동 발견 켜짐"))
         server = Socks5Server(s.port, s.username, s.password).also { it.start() }
         discovery = DiscoveryServer(s.port, s.username, s.password).also { it.start() }
         isRunning = true
+        android.util.Log.i("Socks5Service", "server started on port ${s.port}, user=${s.username}")
     }
 
     private fun stopServer() {
