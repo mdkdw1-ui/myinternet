@@ -155,12 +155,13 @@ class Socks5Server(
     }
 
     private fun handleUdpAssociate(client: Socket, out: OutputStream) {
-        android.util.Log.i("Socks5Server", "UDP 요청 수신 (게임 데이터용) from ${client.inetAddress.hostAddress}:${client.port}, local=${client.localAddress.hostAddress}:${client.localPort}")
+        android.util.Log.i("Socks5Server", "UDP ASSOCIATE 요청 from ${client.inetAddress.hostAddress}:${client.port}")
         val relay = DatagramSocket(0, InetAddress.getByName("0.0.0.0"))
         relay.soTimeout = 0
         val bndPort = relay.localPort
         val bnd = client.localAddress.address.takeIf { it.size == 4 } ?: ByteArray(4)
         out.write(byteArrayOf(0x05, 0x00, 0x00, 0x01) + bnd + byteArrayOf((bndPort ushr 8).toByte(), bndPort.toByte())); out.flush()
+        android.util.Log.i("Socks5Server", "UDP ASSOCIATE OK, relay port=$bndPort")
 
         val session = UdpRelaySession(relay, client)
         val key = "${client.inetAddress.hostAddress}:${client.port}"
@@ -172,31 +173,48 @@ class Socks5Server(
         udpSessions.remove(key)
     }
 
+    /**
+     * 단일 upstream 소켓 방식 (게임 NAT 친화).
+     * - 목적지별로 소켓을 따로 만들지 않고 하나의 DatagramSocket으로 송수신.
+     * - 게임 서버가 "같은 클라이언트 = 같은 source port"를 기대하는 프로토콜에서 안정적.
+     */
     private class UdpRelaySession(
         private val relay: DatagramSocket,
         private val client: Socket
     ) {
+        private val TAG = "Socks5Udp"
         @Volatile private var running = true
         private val clientAddr: InetAddress = client.inetAddress
         @Volatile private var clientUdpPort = 0
-        private val upstreamMap = ConcurrentHashMap<String, DatagramSocket>()
+        private val upstream = DatagramSocket()
         private val resolved = ConcurrentHashMap<String, InetAddress>()
+        private val sentCount = AtomicLong(0)
+        private val recvCount = AtomicLong(0)
+        private val errCount = AtomicLong(0)
 
         init {
-            try { relay.receiveBufferSize = 262144; relay.sendBufferSize = 262144 } catch (_: Exception) {}
+            try {
+                upstream.receiveBufferSize = 262144
+                upstream.sendBufferSize = 262144
+                relay.receiveBufferSize = 262144
+                relay.sendBufferSize = 262144
+            } catch (_: Exception) {}
         }
 
         fun start() {
+            android.util.Log.i(TAG, "session start: relayPort=${relay.localPort} upstreamPort=${upstream.localPort} client=${clientAddr.hostAddress}")
             thread(name = "udp-client-${relay.localPort}") { clientLoop() }
+            thread(name = "udp-upstream-${relay.localPort}") { upstreamLoop() }
         }
 
         fun close() {
             running = false
             try { relay.close() } catch (_: Exception) {}
-            upstreamMap.values.forEach { try { it.close() } catch (_: Exception) {} }
-            upstreamMap.clear()
+            try { upstream.close() } catch (_: Exception) {}
+            android.util.Log.i(TAG, "session close: sent=$sentCount recv=$recvCount err=$errCount")
         }
 
+        // 클라이언트(터널) → 인터넷
         private fun clientLoop() {
             val buf = ByteArray(65535)
             val p = DatagramPacket(buf, buf.size)
@@ -204,38 +222,63 @@ class Socks5Server(
                 try {
                     p.length = buf.size
                     relay.receive(p)
-                    if (p.address != clientAddr) continue
-                    clientUdpPort = p.port
-                    val parsed = parse(buf, p.length) ?: continue
-                    val dst = parsed.first; val dstPort = parsed.second; val off = parsed.third
-                    val key = "${dst.hostAddress}:$dstPort"
-                    val up = upstreamMap.getOrPut(key) {
-                        val s = DatagramSocket()
-                        try {
-                            s.sendBufferSize = 262144; s.receiveBufferSize = 262144
-                            s.soTimeout = 60000
-                        } catch (_: Exception) {}
-                        thread(name = "udp-recv-${relay.localPort}-$key") {
-                            val rbuf = ByteArray(65535)
-                            val rp = DatagramPacket(rbuf, rbuf.size)
-                            while (running) {
-                                try {
-                                    rp.length = rbuf.size
-                                    s.receive(rp)
-                                    val port = clientUdpPort
-                                    if (port == 0) continue
-                                    val header = buildUdpHeader(rp.address, rp.port)
-                                    val out = ByteArray(header.size + rp.length)
-                                    System.arraycopy(header, 0, out, 0, header.size)
-                                    System.arraycopy(rbuf, 0, out, header.size, rp.length)
-                                    relay.send(DatagramPacket(out, out.size, clientAddr, port))
-                                } catch (_: Exception) { if (!running) break }
-                            }
-                        }
-                        s
+                    if (p.address != clientAddr) {
+                        android.util.Log.d(TAG, "drop non-client packet from ${p.address}")
+                        continue
                     }
-                    up.send(DatagramPacket(buf, off, p.length - off, dst, dstPort))
-                } catch (_: Exception) { if (!running) break }
+                    clientUdpPort = p.port
+                    val parsed = parse(buf, p.length) ?: run {
+                        android.util.Log.w(TAG, "cli->up parse fail len=${p.length}")
+                        continue
+                    }
+                    val dst = parsed.first; val dstPort = parsed.second; val off = parsed.third
+                    val len = p.length - off
+                    try {
+                        upstream.send(DatagramPacket(buf, off, len, dst, dstPort))
+                        sentCount.incrementAndGet()
+                        android.util.Log.d(TAG, "cli->up dst=${dst.hostAddress}:$dstPort len=$len")
+                    } catch (e: Exception) {
+                        errCount.incrementAndGet()
+                        android.util.Log.e(TAG, "cli->up send fail dst=${dst.hostAddress}:$dstPort len=$len", e)
+                    }
+                } catch (e: Exception) {
+                    if (!running) break
+                    errCount.incrementAndGet()
+                    android.util.Log.e(TAG, "clientLoop error", e)
+                }
+            }
+        }
+
+        // 인터넷 → 클라이언트(터널)
+        private fun upstreamLoop() {
+            val buf = ByteArray(65535)
+            val p = DatagramPacket(buf, buf.size)
+            while (running) {
+                try {
+                    p.length = buf.size
+                    upstream.receive(p)
+                    recvCount.incrementAndGet()
+                    val port = clientUdpPort
+                    if (port == 0) {
+                        android.util.Log.w(TAG, "up->cli drop: clientUdpPort=0 (src=${p.address.hostAddress}:${p.port})")
+                        continue
+                    }
+                    val header = buildUdpHeader(p.address, p.port)
+                    val out = ByteArray(header.size + p.length)
+                    System.arraycopy(header, 0, out, 0, header.size)
+                    System.arraycopy(buf, 0, out, header.size, p.length)
+                    try {
+                        relay.send(DatagramPacket(out, out.size, clientAddr, port))
+                        android.util.Log.d(TAG, "up->cli src=${p.address.hostAddress}:${p.port} len=${p.length}")
+                    } catch (e: Exception) {
+                        errCount.incrementAndGet()
+                        android.util.Log.e(TAG, "up->cli send fail src=${p.address.hostAddress}:${p.port} len=${p.length}", e)
+                    }
+                } catch (e: Exception) {
+                    if (!running) break
+                    errCount.incrementAndGet()
+                    android.util.Log.e(TAG, "upstreamLoop error", e)
+                }
             }
         }
 
@@ -248,7 +291,9 @@ class Socks5Server(
                     val l = d[4].toInt() and 0xFF
                     if (len < 5 + l + 2) return null
                     val name = String(d, 5, l)
-                    addr = resolved.getOrPut(name) { InetAddress.getByName(name) }
+                    addr = try { resolved.getOrPut(name) { InetAddress.getByName(name) } } catch (e: Exception) {
+                        android.util.Log.e(TAG, "DNS resolve fail: $name", e); return null
+                    }
                     off = 5 + l
                 }
                 0x04 -> { if (len < 22) return null; addr = InetAddress.getByAddress(d.copyOfRange(4, 20)); off = 20 }

@@ -226,7 +226,9 @@ class Tun2Socks(
         val off = ihl + 8
         if (off >= len) return
         val payload = buf.copyOfRange(off, len)
-        android.util.Log.d("Tun2Socks", "UDP 수신: dst=${Utils.ipStr(Utils.intToBytes(dstIp),0)}:$dstPort (${payload.size}B)")
+        if (dstPort != 53 && dstPort != 5353 && dstPort != 1900) {
+            android.util.Log.d("Tun2Socks", "UDP 수신(게임): dst=${Utils.ipStr(Utils.intToBytes(dstIp),0)}:$dstPort (${payload.size}B)")
+        }
 
         // DNS(53)은 서버 프록시를 거치지 않고 클라이언트 폰에서 직접 조회
         if (dstPort == 53) {
@@ -278,7 +280,7 @@ class Tun2Socks(
             }
         } catch (e: Exception) {
             udpRelayFailAt = System.currentTimeMillis()
-            android.util.Log.e("Tun2Socks", "ensureUdpRelay 실패: ${e.message}", e)
+            android.util.Log.e("Tun2Socks", "ensureUdpRelay 실패: ${e.javaClass.simpleName} - ${e.message}", e)
             null
         }
     }
@@ -322,9 +324,12 @@ class Tun2Socks(
             if (!cprot) {
                 Thread.sleep(100)
                 cprot = MyVpnService.protectSocket(control!!)
-                android.util.Log.w("Tun2Socks", "protect 재시도 결과=$cprot")
             }
             android.util.Log.d("Tun2Socks", "UdpRelay control protect=$cprot")
+            if (!cprot) {
+                try { control?.close() } catch (_: Exception) {}
+                throw Exception("control protect 실패")
+            }
             LocalHotspotManager.hotspotNetwork?.let { n ->
                 try { n.bindSocket(control!!); android.util.Log.d("Tun2Socks", "UdpRelay bindSocket OK") }
                 catch (e: Exception) { android.util.Log.w("Tun2Socks", "UdpRelay bindSocket FAIL", e) }
@@ -362,6 +367,10 @@ class Tun2Socks(
                 uprot = MyVpnService.protectSocket(udp!!)
             }
             android.util.Log.d("Tun2Socks", "UdpRelay udp protect=$uprot")
+            if (!uprot) {
+                try { udp?.close() } catch (_: Exception) {}
+                throw Exception("udp protect 실패")
+            }
             LocalHotspotManager.hotspotNetwork?.let { n ->
                 try { n.bindSocket(udp!!); android.util.Log.d("Tun2Socks", "UdpRelay udp bindSocket OK") }
                 catch (e: Exception) { android.util.Log.w("Tun2Socks", "UdpRelay udp bindSocket FAIL", e) }
