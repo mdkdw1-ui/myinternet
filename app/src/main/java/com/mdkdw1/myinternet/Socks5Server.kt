@@ -227,7 +227,8 @@ class Socks5Server(
                         continue
                     }
                     clientUdpPort = p.port
-                    val parsed = parse(buf, p.length) ?: run {
+                    val parsed = parse(buf, p.length)
+                    if (parsed == null) {
                         android.util.Log.w(TAG, "cli->up parse fail len=${p.length}")
                         continue
                     }
