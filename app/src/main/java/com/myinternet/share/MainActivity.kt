@@ -3,6 +3,8 @@ package com.myinternet.share
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.Intent
 import android.net.VpnService
 import android.net.wifi.WifiManager
@@ -10,7 +12,10 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.widget.Button
+import android.graphics.Bitmap
+import android.view.View
 import android.widget.EditText
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
@@ -22,13 +27,20 @@ import java.util.Collections
 class MainActivity : Activity() {
     private lateinit var hostEt: EditText
     private lateinit var info: TextView
+    private lateinit var qrView: ImageView
+    private var lastQr = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AppLog.i("ui", "MainActivity onCreate")
+        val perms = mutableListOf<String>()
         if (Build.VERSION.SDK_INT >= 33) {
-            requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
+            perms += Manifest.permission.POST_NOTIFICATIONS
+            perms += Manifest.permission.NEARBY_WIFI_DEVICES
+        } else {
+            perms += Manifest.permission.ACCESS_FINE_LOCATION
         }
+        requestPermissions(perms.toTypedArray(), 1)
         val pad = (16 * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -63,6 +75,34 @@ class MainActivity : Activity() {
         btn("핫스팟/무선 설정 열기") {
             startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
         }
+        btn("로컬 핫스팟 + 서버 시작 (공유데이터 불필요)") {
+            LocalHotspot.start(this) { ok ->
+                if (ok) {
+                    try {
+                        startForegroundService(Intent(this, ServerService::class.java))
+                    } catch (t: Throwable) {
+                        AppLog.e("ui", "서버 시작 요청 실패", t)
+                    }
+                }
+                root.postDelayed({ refresh() }, 800)
+            }
+        }
+        btn("로컬 핫스팟 + 서버 중지") {
+            LocalHotspot.stop()
+            stopService(Intent(this, ServerService::class.java))
+            root.postDelayed({ refresh() }, 500)
+        }
+        btn("핫스팟 이름/비밀번호 복사") {
+            val cm = getSystemService(CLIPBOARD_SERVICE) as ClipboardManager
+            cm.setPrimaryClip(ClipData.newPlainText("hotspot", "${LocalHotspot.ssid}\n${LocalHotspot.pass}"))
+            Toast.makeText(this, "복사했습니다", Toast.LENGTH_SHORT).show()
+        }
+        qrView = ImageView(this).apply {
+            visibility = View.GONE
+            scaleType = ImageView.ScaleType.FIT_CENTER
+        }
+        val qs = (280 * resources.displayMetrics.density).toInt()
+        root.addView(qrView, LinearLayout.LayoutParams(qs, qs))
 
         label("클라이언트 (유심 없는 폰)")
         hostEt = EditText(this).apply {
@@ -127,10 +167,34 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun updateQr() {
+        if (!::qrView.isInitialized) return
+        if (LocalHotspot.ssid.isEmpty()) {
+            qrView.visibility = View.GONE
+            lastQr = ""
+            return
+        }
+        val key = "${LocalHotspot.ssid}|${LocalHotspot.pass}|${LocalHotspot.sec}"
+        if (key != lastQr) {
+            try {
+                val bmp: Bitmap = QrHelper.wifi(LocalHotspot.ssid, LocalHotspot.pass, LocalHotspot.sec)
+                qrView.setImageBitmap(bmp)
+                lastQr = key
+            } catch (t: Throwable) {
+                AppLog.e("ui", "QR 생성 실패", t)
+            }
+        }
+        qrView.visibility = View.VISIBLE
+    }
+
     private fun refresh() {
+        updateQr()
         if (::info.isInitialized) {
+            val hs = if (LocalHotspot.ssid.isNotEmpty())
+                "\n로컬 핫스팟: ${LocalHotspot.ssid}\n비밀번호: ${LocalHotspot.pass}"
+            else "\n로컬 핫스팟: ${LocalHotspot.state}"
             info.text = "서버 상태: " + (if (ServerService.running) "실행 중" else "중지") +
-                " (포트 ${ServerService.PORT})\n내 IP 목록\n" + ips()
+                " (포트 ${ServerService.PORT})" + hs + "\n내 IP 목록\n" + ips()
         }
     }
 
