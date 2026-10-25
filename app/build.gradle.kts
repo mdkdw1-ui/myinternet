@@ -6,7 +6,7 @@ plugins {
 android {
     namespace = "com.myinternet.share"
     compileSdk = 34
-    ndkVersion = "26.3.11517263"
+    ndkVersion = "26.3.11579264"
 
     defaultConfig {
         applicationId = "com.myinternet.share"
