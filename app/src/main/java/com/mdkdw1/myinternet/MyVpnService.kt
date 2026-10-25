@@ -41,7 +41,7 @@ class MyVpnService : VpnService() {
 
     private fun startVpn() {
         Log.i("MyVpn", "startVpn() entered")
-        startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 준비 중..."))
+        startVpnForeground("VPN 연결 준비 중...")
         try { startVpnInternal() }
         catch (e: Throwable) {
             lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
@@ -125,8 +125,9 @@ class MyVpnService : VpnService() {
             Log.i("MyVpn", "establish() start")
             val pfd = builder.establish()
             if (pfd == null) {
-                lastError = "TUN 생성 실패"
+                lastError = "TUN 생성 실패 (VPN 권한 거부 또는 다른 VPN 사용 중)"
                 Log.e("MyVpn", "builder.establish() returned null")
+                try { stopVpn() } catch (_: Exception) {}
                 stopSelf(); return
             }
             tun = pfd
@@ -139,6 +140,7 @@ class MyVpnService : VpnService() {
                 Log.e("MyVpn", "Hev start failed: $lastError")
                 try { pfd.close() } catch (_: Exception) {}
                 tun = null; isRunning = false
+                try { stopVpn() } catch (_: Exception) {}
                 stopSelf(); return
             }
 
@@ -167,6 +169,19 @@ class MyVpnService : VpnService() {
     override fun onDestroy() {
         Log.i("MyVpn", "onDestroy()")
         stopVpn(); instance = null; super.onDestroy()
+    }
+
+    private fun startVpnForeground(text: String) {
+        val notification = buildNotification(text)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForeground(
+                NOTIFICATION_ID,
+                notification,
+                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+            )
+        } else {
+            startForeground(NOTIFICATION_ID, notification)
+        }
     }
 
     private fun buildNotification(text: String): Notification {
