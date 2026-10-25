@@ -18,10 +18,10 @@ jobs:
           distribution: temurin
           java-version: "17"
 
+      - uses: android-actions/setup-android@v3
+
       - name: Android SDK / NDK
-        run: |
-          yes | sdkmanager --licenses > /dev/null || true
-          sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11517263"
+        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11517263"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
