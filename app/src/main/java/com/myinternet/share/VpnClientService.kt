@@ -13,6 +13,7 @@ class VpnClientService : VpnService() {
     private var pfd: ParcelFileDescriptor? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var statsThread: Thread? = null
+    private var started = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         AppLog.i("vpn", "onStartCommand action=${intent?.action} host=${intent?.getStringExtra("host")}")
@@ -23,7 +24,7 @@ class VpnClientService : VpnService() {
         }
         val host = intent?.getStringExtra("host") ?: return START_NOT_STICKY
         startTunnel(host)
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startTunnel(host: String) {
@@ -75,8 +76,9 @@ class VpnClientService : VpnService() {
                 """.trimIndent() + "\n"
             )
             AppLog.i("vpn", "hev 설정:\n" + cfg.readText())
-            TProxyService.TProxyStartService(cfg.absolutePath, fd.fd)
-            AppLog.i("vpn", "TProxyStartService 반환")
+            val r = TProxyService.TProxyStartService(cfg.absolutePath, fd.fd)
+            started = true
+            AppLog.i("vpn", "TProxyStartService 반환: $r")
             startStats()
         } catch (t: Throwable) {
             AppLog.e("vpn", "터널 시작 실패", t)
@@ -104,7 +106,10 @@ class VpnClientService : VpnService() {
     private fun stopTunnel() {
         statsThread?.interrupt()
         statsThread = null
-        try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
+        if (started) {
+            started = false
+            try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
+        }
         try { pfd?.close() } catch (_: Exception) {}
         pfd = null
         try { wifiLock?.release() } catch (_: Exception) {}
