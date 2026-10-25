@@ -2,6 +2,7 @@ package com.myinternet.share
 
 import android.Manifest
 import android.app.Activity
+import android.app.AlertDialog
 import android.content.Intent
 import android.net.VpnService
 import android.net.wifi.WifiManager
@@ -13,6 +14,7 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 import java.net.Inet4Address
 import java.net.NetworkInterface
 import java.util.Collections
@@ -23,6 +25,7 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        AppLog.i("ui", "MainActivity onCreate")
         if (Build.VERSION.SDK_INT >= 33) {
             requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), 1)
         }
@@ -45,12 +48,18 @@ class MainActivity : Activity() {
 
         label("서버 (데이터 있는 폰)")
         btn("서버 시작") {
-            startForegroundService(Intent(this, ServerService::class.java))
-            refresh()
+            try {
+                startForegroundService(Intent(this, ServerService::class.java))
+            } catch (t: Throwable) {
+                AppLog.e("ui", "서버 시작 요청 실패", t)
+            }
+            root.postDelayed({ refresh() }, 800)
         }
         btn("서버 중지") {
             stopService(Intent(this, ServerService::class.java))
+            root.postDelayed({ refresh() }, 500)
         }
+        btn("서버 자가 테스트 (이 폰)") { runTest("127.0.0.1") }
         btn("핫스팟/무선 설정 열기") {
             startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
         }
@@ -68,8 +77,13 @@ class MainActivity : Activity() {
         btn("연결 해제") {
             startService(Intent(this, VpnClientService::class.java).setAction("stop"))
         }
+        btn("서버 연결 테스트 (입력한 IP)") { runTest(hostEt.text.toString().trim()) }
 
-        info = label("")
+        label("진단")
+        btn("로그 보기 / 복사") { startActivity(Intent(this, LogActivity::class.java)) }
+
+        info = TextView(this).apply { textSize = 14f; setPadding(0, pad, 0, 0) }
+        root.addView(info)
         setContentView(ScrollView(this).apply { addView(root) })
         refresh()
     }
@@ -82,20 +96,41 @@ class MainActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        AppLog.i("ui", "VPN 권한 결과 code=$resultCode")
         if (requestCode == 100 && resultCode == RESULT_OK) startVpn()
     }
 
     private fun startVpn() {
-        startService(
-            Intent(this, VpnClientService::class.java)
-                .putExtra("host", hostEt.text.toString().trim())
-        )
+        val host = hostEt.text.toString().trim()
+        AppLog.i("ui", "VPN 연결 요청 host=$host")
+        try {
+            startService(Intent(this, VpnClientService::class.java).putExtra("host", host))
+        } catch (t: Throwable) {
+            AppLog.e("ui", "VPN 서비스 시작 실패", t)
+        }
+    }
+
+    private fun runTest(host: String) {
+        Toast.makeText(this, "테스트 중... (최대 15초)", Toast.LENGTH_SHORT).show()
+        Thread {
+            val msg = "대상: $host:${ServerService.PORT}\nTCP: " +
+                Socks5Test.tcp(host, ServerService.PORT) +
+                "\nUDP(DNS): " + Socks5Test.udp(host, ServerService.PORT)
+            AppLog.i("test", msg)
+            runOnUiThread {
+                AlertDialog.Builder(this)
+                    .setTitle("테스트 결과")
+                    .setMessage(msg)
+                    .setPositiveButton("확인", null)
+                    .show()
+            }
+        }.start()
     }
 
     private fun refresh() {
         if (::info.isInitialized) {
-            info.text = "내 IP 목록 (서버 포트 ${ServerService.PORT})\n" + ips()
-            info.textSize = 14f
+            info.text = "서버 상태: " + (if (ServerService.running) "실행 중" else "중지") +
+                " (포트 ${ServerService.PORT})\n내 IP 목록\n" + ips()
         }
     }
 
