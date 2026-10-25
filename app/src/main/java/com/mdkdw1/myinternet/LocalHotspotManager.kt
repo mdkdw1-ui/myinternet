@@ -1,101 +1,184 @@
 package com.mdkdw1.myinternet
 
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
-import android.net.wifi.WifiManager
-import android.net.wifi.WifiNetworkSpecifier
+import android.app.*
+import android.content.Intent
+import android.net.VpnService
 import android.os.Build
-import android.os.Handler
-import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.util.Log
+import java.io.FileInputStream
+import java.io.FileOutputStream
 
-class LocalHotspotManager(private val context: Context) {
+class MyVpnService : VpnService() {
     companion object {
-        @Volatile var hotspotNetwork: Network? = null
-    }
+        const val CHANNEL_ID = "vpn_service"
+        const val NOTIFICATION_ID = 1002
+        const val ACTION_START = "VPN_START"
+        const val ACTION_STOP = "VPN_STOP"
 
-    private val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
-    private val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-    private var reservation: WifiManager.LocalOnlyHotspotReservation? = null
-    private var activeCallback: ConnectivityManager.NetworkCallback? = null
-    private var activeCb: HotspotCallback? = null
+        @Volatile var isRunning = false
+        @Volatile var lastError: String? = null
+        @Volatile var instance: MyVpnService? = null
 
-    interface HotspotCallback {
-        fun onHotspotStarted(ssid: String, password: String)
-        fun onHotspotFailed(reason: String)
-        fun onClientConnected()
-        fun onClientDisconnected()
-    }
-
-    fun startHotspot(callback: HotspotCallback) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
-            callback.onHotspotFailed("Android 8.0 이상 필요"); return
+        fun protectSocket(s: java.net.Socket): Boolean {
+            val result = try { instance?.protect(s) ?: false } catch (e: Exception) {
+                Log.e("MyVpn", "protectSocket(Socket) failed", e)
+                false
+            }
+            Log.d("MyVpn", "protectSocket(Socket) result=$result")
+            return result
         }
+
+        fun protectSocket(s: java.net.DatagramSocket): Boolean {
+            val result = try { instance?.protect(s) ?: false } catch (e: Exception) {
+                Log.e("MyVpn", "protectSocket(DatagramSocket) failed", e)
+                false
+            }
+            Log.d("MyVpn", "protectSocket(DatagramSocket) result=$result")
+            return result
+        }
+    }
+
+    private var tun: ParcelFileDescriptor? = null
+    private var tun2socks: Tun2Socks? = null
+
+    override fun onCreate() {
+        super.onCreate()
+        instance = this
+        Log.i("MyVpn", "onCreate")
+        if (Build.VERSION.SDK_INT >= 26) {
+            val ch = NotificationChannel(CHANNEL_ID, "MyInternet VPN", NotificationManager.IMPORTANCE_LOW)
+            getSystemService(NotificationManager::class.java).createNotificationChannel(ch)
+        }
+    }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        Log.i("MyVpn", "onStartCommand action=${intent?.action} flags=$flags startId=$startId")
+        when (intent?.action) {
+            ACTION_START -> startVpn()
+            ACTION_STOP -> { stopVpn(); stopSelf() }
+        }
+        return START_STICKY
+    }
+
+    private fun startVpn() {
+        Log.i("MyVpn", "startVpn() begin")
+        startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 준비 중..."))
         try {
-            wifiManager.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
-                override fun onStarted(res: WifiManager.LocalOnlyHotspotReservation) {
-                    super.onStarted(res); reservation = res
-                    val cfg = res.wifiConfiguration
-                    val ssid = cfg?.SSID; val pw = cfg?.preSharedKey
-                    Handler(Looper.getMainLooper()).post {
-                        if (ssid.isNullOrBlank() || pw.isNullOrBlank())
-                            callback.onHotspotFailed("SSID/비번 확인 실패")
-                        else callback.onHotspotStarted(ssid, pw)
-                    }
-                }
-                override fun onStopped() {
-                    Handler(Looper.getMainLooper()).post { callback.onHotspotFailed("핫스팟 중지됨") }
-                }
-                override fun onFailed(reason: Int) {
-                    Handler(Looper.getMainLooper()).post { callback.onHotspotFailed("핫스팟 시작 실패: $reason") }
-                }
-            }, Handler(Looper.getMainLooper()))
-        } catch (e: Exception) { callback.onHotspotFailed("오류: ${e.message}") }
+            startVpnInternal()
+        } catch (e: Throwable) {
+            lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
+            Log.e("MyVpn", "startVpn error", e)
+            try { stopVpn() } catch (_: Exception) {}
+            stopSelf()
+        }
     }
 
-    fun stopHotspot() { try { reservation?.close() } catch (_: Exception) {}; reservation = null }
+    private fun startVpnInternal() {
+        if (isRunning) {
+            Log.i("MyVpn", "startVpnInternal() already running")
+            return
+        }
+        lastError = null
 
-    fun cancelPending() {
-        activeCallback?.let { try { connectivityManager.unregisterNetworkCallback(it) } catch (_: Exception) {} }
-        activeCallback = null; activeCb = null; hotspotNetwork = null
+        val s = SettingsManager(this)
+        val host = s.srvHost.trim()
+        val port = s.srvPort.coerceIn(1, 65535)
+        val user = s.srvUser.trim()
+        val pass = s.srvPass.trim()
+
+        Log.i("MyVpn", "vpn-precheck host=$host port=$port userSet=${user.isNotEmpty()} passSet=${pass.isNotEmpty()}")
+
+        if (host.isBlank() || user.isBlank() || pass.isBlank()) {
+            lastError = "서버 정보가 없습니다"
+            Log.e("MyVpn", "vpn-precheck failed: blank host/user/pass")
+            stopSelf(); return
+        }
+
+        val underlying = LocalHotspotManager.hotspotNetwork
+        if (underlying == null) {
+            lastError = "핫스팟 네트워크 미준비"
+            Log.e("MyVpn", "vpn-precheck failed: hotspotNetwork is null")
+            stopSelf(); return
+        }
+
+        val resolvedHost = try {
+            java.net.InetAddress.getByName(host).hostAddress
+        } catch (e: Exception) {
+            Log.e("MyVpn", "resolve host failed: $host", e)
+            lastError = "서버 주소 해석 실패: $host"
+            stopSelf(); return
+        }
+        Log.i("MyVpn", "vpn-precheck resolvedHost=$resolvedHost")
+
+        try {
+            val builder = Builder()
+            builder.setSession("MyInternet")
+            builder.addAddress("10.0.0.2", 32)
+            builder.addAddress("fd00::1", 128)
+
+            // 전체 0.0.0.0/0 라우트는 루프/오동작을 유발할 수 있어 최소화.
+            builder.addRoute("0.0.0.0", 0)
+
+            try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
+
+            builder.setUnderlyingNetworks(arrayOf(underlying))
+            builder.addDnsServer("1.1.1.1")
+            builder.setMtu(1500)
+            if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
+
+            Log.i("MyVpn", "establish() start with underlying=$underlying")
+            val pfd = builder.establish() ?: run {
+                lastError = "TUN 생성 실패"
+                Log.e("MyVpn", "builder.establish() returned null")
+                stopSelf(); return
+            }
+            tun = pfd
+            Log.i("MyVpn", "TUN established fd=${pfd.fileDescriptor}")
+
+            Log.i("MyVpn", "Tun2Socks 시작: host=$host, port=$port")
+            val inStream = FileInputStream(pfd.fileDescriptor)
+            val outStream = FileOutputStream(pfd.fileDescriptor)
+            tun2socks = Tun2Socks(inStream, outStream, host, port, user, pass)
+            tun2socks?.start()
+            Log.i("MyVpn", "Tun2Socks 시작 완료")
+
+            isRunning = true
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.notify(NOTIFICATION_ID, buildNotification("VPN 연결됨 · $host:$port"))
+            Log.i("MyVpn", "VPN running; host=$host port=$port underlying=$underlying")
+
+        } catch (e: Exception) {
+            lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
+            Log.e("MyVpn", "startVpnInternal failed", e)
+            try { tun?.close() } catch (_: Exception) {}
+            tun = null; isRunning = false
+            stopSelf()
+        }
     }
 
-    fun connectToHotspot(ssid: String, password: String, callback: HotspotCallback) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
-            callback.onHotspotFailed("Android 10 이상 필요"); return
-        }
-        cancelPending(); activeCb = callback
+    private fun stopVpn() {
+        Log.i("MyVpn", "stopVpn() called")
+        tun2socks?.stop(); tun2socks = null
+        try { tun?.close() } catch (_: Exception) {}
+        tun = null; isRunning = false
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+        else @Suppress("DEPRECATION") stopForeground(true)
+    }
 
-        val specifier = WifiNetworkSpecifier.Builder().setSsid(ssid).setWpa2Passphrase(password).build()
-        val request = NetworkRequest.Builder()
-            .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-            .addCapability(NetworkCapabilities.NET_CAPABILITY_NOT_RESTRICTED)
-            .setNetworkSpecifier(specifier).build()
+    override fun onDestroy() {
+        Log.i("MyVpn", "onDestroy")
+        stopVpn(); instance = null; super.onDestroy()
+    }
 
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                android.util.Log.i("Hotspot", "onAvailable: $network")
-                hotspotNetwork = network
-                Handler(Looper.getMainLooper()).post { activeCb?.onClientConnected() }
-            }
-            override fun onUnavailable() {
-                android.util.Log.w("Hotspot", "onUnavailable")
-                Handler(Looper.getMainLooper()).post { activeCb?.onHotspotFailed("연결 실패 (시간 초과/거부)") }
-                hotspotNetwork = null; activeCallback = null
-            }
-            override fun onLost(network: Network) {
-                android.util.Log.w("Hotspot", "onLost: $network")
-                if (hotspotNetwork == network) hotspotNetwork = null
-                Handler(Looper.getMainLooper()).post { activeCb?.onClientDisconnected() }
-            }
-            override fun onCapabilitiesChanged(network: Network, caps: NetworkCapabilities) {
-                android.util.Log.i("Hotspot", "onCapabilitiesChanged: $network caps=$caps")
-            }
-        }
-        activeCallback = cb
-        try { connectivityManager.requestNetwork(request, cb, 15000) }
-        catch (e: Exception) { activeCallback = null; callback.onHotspotFailed("연결 요청 오류: ${e.message}") }
+    private fun buildNotification(text: String): Notification {
+        val stopIntent = Intent(this, MyVpnService::class.java).apply { action = ACTION_STOP }
+        val pi = PendingIntent.getService(this, 0, stopIntent, PendingIntent.FLAG_IMMUTABLE)
+        val b = if (Build.VERSION.SDK_INT >= 26) Notification.Builder(this, CHANNEL_ID) else @Suppress("DEPRECATION") Notification.Builder(this)
+        b.setContentTitle("MyInternet VPN").setContentText(text).setSmallIcon(android.R.drawable.stat_sys_download_done).setOngoing(true)
+        if (Build.VERSION.SDK_INT >= 26) b.addAction(Notification.Action.Builder(null, "중지", pi).build())
+        else @Suppress("DEPRECATION") b.addAction(android.R.drawable.ic_delete, "중지", pi)
+        return b.build()
     }
 }
+
