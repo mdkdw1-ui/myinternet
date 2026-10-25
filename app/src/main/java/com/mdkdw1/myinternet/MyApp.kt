@@ -18,13 +18,22 @@ class MyApp : Application() {
             try {
                 val sw = StringWriter()
                 e.printStackTrace(PrintWriter(sw))
-                val file = File(filesDir, "crash.txt")
-                file.writeText("=== CRASH thread=${thread.name} time=${System.currentTimeMillis()} ===\n" + sw.toString())
+                val log = "=== CRASH thread=${thread.name} time=${System.currentTimeMillis()} ===\n" + sw.toString()
+
+                // 앱 전용 외부 저장소 (Termux에서 접근 가능)
+                try {
+                    val ext = getExternalFilesDir(null) ?: filesDir
+                    File(ext, "myinternet_crash.log").appendText(log + "\n\n")
+                } catch (_: Exception) {}
+
+                // 내부 저장소 (CrashActivity 표시용)
+                try {
+                    File(filesDir, "crash.txt").writeText(log)
+                } catch (_: Exception) {}
             } catch (_: Exception) {}
+
             Log.e("MyApp", "Uncaught exception in ${thread.name}", e)
 
-            // 메인 스레드 크래시: 시스템 핸들러로 위임 (앱 종료)
-            // 백그라운드 스레드 크래시: 로그만 남기고 앱 유지
             if (thread === Looper.getMainLooper().thread) {
                 defaultHandler?.uncaughtException(thread, e)
             }
