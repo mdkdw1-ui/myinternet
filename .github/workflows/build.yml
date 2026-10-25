@@ -64,7 +64,7 @@ jobs:
         id: bump
         run: |
           git fetch --tags
-          LAST=$(git tag -l 'v*' | sort -V | tail -1 | sed 's/^v//')
+          LAST=$(git tag -l 'v*' | sed 's/^v//' | sed 's/-hev$//' | grep -E '^[0-9]+(\.[0-9]+)*$' | sort -V | tail -1)
           LAST=${LAST:-0.000}
           NEW_NAME=$(python3 -c "print(f'{${LAST} + 0.001:.3f}')")
           NEW_CODE=$(( $(git rev-list --count HEAD) ))
