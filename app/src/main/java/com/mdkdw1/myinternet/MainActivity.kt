@@ -379,22 +379,33 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun requestVpn() {
-        android.util.Log.i("MainActivity", "requestVpn() host=${settings.srvHost} port=${settings.srvPort}")
-        if (settings.srvHost.isBlank()) { toast("서버 정보 없음"); return }
-        val intent = VpnService.prepare(this)
-        if (intent != null) {
-            android.util.Log.i("MainActivity", "VpnService.prepare returned intent -> show dialog")
-            startActivityForResult(intent, VPN_REQ)
-        } else {
-            android.util.Log.i("MainActivity", "VpnService.prepare null -> startVpnService()")
-            startVpnService()
+        try {
+            android.util.Log.i("MainActivity", "requestVpn() host=${settings.srvHost} port=${settings.srvPort}")
+            if (settings.srvHost.isBlank()) { toast("서버 정보 없음"); return }
+            val intent = VpnService.prepare(this)
+            if (intent != null) {
+                android.util.Log.i("MainActivity", "VpnService.prepare returned intent -> show dialog")
+                startActivityForResult(intent, VPN_REQ)
+            } else {
+                android.util.Log.i("MainActivity", "VpnService.prepare null -> startVpnService()")
+                startVpnService()
+            }
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "requestVpn failed", e)
+            toast("VPN 요청 실패: ${e.javaClass.simpleName} - ${e.message}")
         }
     }
     private fun startVpnService() {
-        android.util.Log.i("MainActivity", "startVpnService() called")
-        val i = Intent(this, MyVpnService::class.java).apply { action = MyVpnService.ACTION_START }
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
-        toast("VPN 시작")
+        try {
+            android.util.Log.i("MainActivity", "startVpnService() called")
+            val i = Intent(this, MyVpnService::class.java).apply { action = MyVpnService.ACTION_START }
+            if (Build.VERSION.SDK_INT >= 26) startForegroundService(i) else startService(i)
+            android.util.Log.i("MainActivity", "startForegroundService OK")
+            toast("VPN 시작")
+        } catch (e: Throwable) {
+            android.util.Log.e("MainActivity", "startVpnService failed", e)
+            toast("VPN 시작 실패: ${e.javaClass.simpleName} - ${e.message}")
+        }
     }
     private fun stopVpn() {
         startService(Intent(this, MyVpnService::class.java).apply { action = MyVpnService.ACTION_STOP })
@@ -403,7 +414,14 @@ class MainActivity : AppCompatActivity() {
     @Deprecated("Deprecated in API 30")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == VPN_REQ) { if (resultCode == RESULT_OK) startVpnService() else toast("VPN 권한 필요") }
+        if (requestCode == VPN_REQ) {
+            try {
+                if (resultCode == RESULT_OK) startVpnService() else toast("VPN 권한 필요")
+            } catch (e: Throwable) {
+                android.util.Log.e("MainActivity", "onActivityResult VPN_REQ failed", e)
+                toast("VPN 시작 실패: ${e.javaClass.simpleName}")
+            }
+        }
     }
     private fun startServer() {
         android.util.Log.i("MainActivity", "startServer() called")
