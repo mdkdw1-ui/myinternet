@@ -5,8 +5,9 @@ import android.content.Intent
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import java.io.FileInputStream
+import java.io.FileOutputStream
 import android.util.Log
-import java.net.InetAddress
 
 class MyVpnService : VpnService() {
     companion object {
@@ -18,9 +19,13 @@ class MyVpnService : VpnService() {
         @Volatile var isRunning = false
         @Volatile var lastError: String? = null
         @Volatile var instance: MyVpnService? = null
+
+        fun protectSocket(s: java.net.Socket): Boolean = try { instance?.protect(s) ?: false } catch (_: Exception) { false }
+        fun protectSocket(s: java.net.DatagramSocket): Boolean = try { instance?.protect(s) ?: false } catch (_: Exception) { false }
     }
 
     private var tun: ParcelFileDescriptor? = null
+    private var tun2socks: Tun2Socks? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -40,8 +45,7 @@ class MyVpnService : VpnService() {
     }
 
     private fun startVpn() {
-        Log.i("MyVpn", "startVpn() entered")
-        startVpnForeground("VPN 연결 준비 중...")
+        startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 준비 중..."))
         try { startVpnInternal() }
         catch (e: Throwable) {
             lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
@@ -52,53 +56,20 @@ class MyVpnService : VpnService() {
     }
 
     private fun startVpnInternal() {
-        if (isRunning) {
-            Log.i("MyVpn", "startVpnInternal() already running")
-            return
-        }
+        if (isRunning) return
         lastError = null
 
-        // hev 라이브러리 로드 확인
-        val libLoaded = try { HevTunnelManager.isLibLoaded() } catch (e: Throwable) {
-            lastError = "HevTunnelManager 초기화 실패: ${e.javaClass.simpleName} - ${e.message}"
-            Log.e("MyVpn", "HevTunnelManager access failed", e)
-            false
-        }
-        Log.i("MyVpn", "hev libLoaded=$libLoaded, hevLastError=${HevTunnelManager.lastError}")
-        if (!libLoaded) {
-            lastError = lastError ?: HevTunnelManager.lastError ?: "hev 라이브러리 미탑재"
-            Log.e("MyVpn", "vpn-precheck failed: lib not loaded ($lastError)")
-            stopSelf(); return
-        }
-
         val s = SettingsManager(this)
-        val host = s.srvHost.trim()
-        val port = s.srvPort.coerceIn(1, 65535)
-        val user = s.srvUser.trim()
-        val pass = s.srvPass.trim()
-        Log.i("MyVpn", "vpn-precheck host=$host port=$port userEmpty=${user.isEmpty()} passEmpty=${pass.isEmpty()}")
-
+        val host = s.srvHost; val port = s.srvPort
+        val user = s.srvUser; val pass = s.srvPass
         if (host.isBlank() || user.isBlank() || pass.isBlank()) {
-            lastError = "서버 정보가 없습니다"
-            Log.e("MyVpn", "vpn-precheck failed: blank host/user/pass")
-            stopSelf(); return
+            lastError = "서버 정보가 없습니다"; stopSelf(); return
         }
 
         val underlying = LocalHotspotManager.hotspotNetwork
         if (underlying == null) {
-            lastError = "핫스팟 네트워크 미준비"
-            Log.e("MyVpn", "vpn-precheck failed: hotspotNetwork is null")
-            stopSelf(); return
+            lastError = "핫스팟 네트워크 미준비"; stopSelf(); return
         }
-
-        val resolvedHost = try {
-            InetAddress.getByName(host).hostAddress
-        } catch (e: Exception) {
-            Log.e("MyVpn", "resolve host failed: $host", e)
-            lastError = "서버 주소 해석 실패: $host"
-            stopSelf(); return
-        }
-        Log.i("MyVpn", "vpn-precheck resolvedHost=$resolvedHost underlying=$underlying")
 
         try {
             val builder = Builder()
@@ -107,50 +78,38 @@ class MyVpnService : VpnService() {
             builder.addAddress("fd00::1", 128)
             builder.addRoute("0.0.0.0", 0)
 
-            // 서버 IP 우회 (VPN 루프 방지)
             try {
-                if (resolvedHost != null && !resolvedHost.contains(":")) {
-                    builder.addRoute(resolvedHost, 32)
-                    Log.i("MyVpn", "bypass route added: $resolvedHost/32")
+                val serverIp = java.net.InetAddress.getByName(host).hostAddress
+                if (serverIp != null && !serverIp.contains(":")) {
+                    builder.addRoute(serverIp, 32)
                 }
             } catch (_: Exception) {}
 
             try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
 
             builder.setUnderlyingNetworks(arrayOf(underlying))
-            builder.addDnsServer("1.1.1.1")
-            builder.setMtu(1280)
+            // DNS: 8.8.8.8 우선 (Cloudflare 1.1.1.1이 막힌 환경 대응)
+            builder.addDnsServer("8.8.8.8")
+            builder.addDnsServer("8.8.4.4")
+            // MTU 1100 — TLS/QUIC 대형 패킷 단편화 방지
+            builder.setMtu(1100)
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
 
-            Log.i("MyVpn", "establish() start")
-            val pfd = builder.establish()
-            if (pfd == null) {
-                lastError = "TUN 생성 실패 (VPN 권한 거부 또는 다른 VPN 사용 중)"
-                Log.e("MyVpn", "builder.establish() returned null")
-                try { stopVpn() } catch (_: Exception) {}
-                stopSelf(); return
-            }
+            val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
-            Log.i("MyVpn", "TUN established fd=${pfd.fd}")
+            Log.i("MyVpn", "TUN established mtu=1100 dns=8.8.8.8 fd=${pfd.fd}")
 
-            Log.i("MyVpn", "HevTunnelManager.start() start")
-            val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
-            if (!started) {
-                lastError = HevTunnelManager.lastError ?: "hev 시작 실패"
-                Log.e("MyVpn", "Hev start failed: $lastError")
-                try { pfd.close() } catch (_: Exception) {}
-                tun = null; isRunning = false
-                try { stopVpn() } catch (_: Exception) {}
-                stopSelf(); return
-            }
+            val inStream = FileInputStream(pfd.fileDescriptor)
+            val outStream = FileOutputStream(pfd.fileDescriptor)
+            tun2socks = Tun2Socks(inStream, outStream, host, port, user, pass)
+            tun2socks?.start()
 
             isRunning = true
             val nm = getSystemService(NotificationManager::class.java)
-            nm.notify(NOTIFICATION_ID, buildNotification("VPN 연결됨 · $host:$port"))
-            Log.i("MyVpn", "VPN running; hev started; host=$host port=$port underlying=$underlying")
+            nm.notify(NOTIFICATION_ID, buildNotification("VPN 연결됨 · $host:$port (MTU 1100)"))
+            Log.i("MyVpn", "VPN running; mtu=1100 dns=8.8.8.8 host=$host port=$port underlying=$underlying")
         } catch (e: Exception) {
-            lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
-            Log.e("MyVpn", "startVpnInternal failed", e)
+            lastError = e.message
             try { tun?.close() } catch (_: Exception) {}
             tun = null; isRunning = false
             stopSelf()
@@ -158,31 +117,14 @@ class MyVpnService : VpnService() {
     }
 
     private fun stopVpn() {
-        Log.i("MyVpn", "stopVpn() called")
-        HevTunnelManager.stop()
+        tun2socks?.stop(); tun2socks = null
         try { tun?.close() } catch (_: Exception) {}
         tun = null; isRunning = false
         if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
         else @Suppress("DEPRECATION") stopForeground(true)
     }
 
-    override fun onDestroy() {
-        Log.i("MyVpn", "onDestroy()")
-        stopVpn(); instance = null; super.onDestroy()
-    }
-
-    private fun startVpnForeground(text: String) {
-        val notification = buildNotification(text)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                notification,
-                android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
-            )
-        } else {
-            startForeground(NOTIFICATION_ID, notification)
-        }
-    }
+    override fun onDestroy() { stopVpn(); instance = null; super.onDestroy() }
 
     private fun buildNotification(text: String): Notification {
         val stopIntent = Intent(this, MyVpnService::class.java).apply { action = ACTION_STOP }
