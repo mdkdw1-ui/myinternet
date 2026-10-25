@@ -349,14 +349,15 @@ class Tun2Socks(
                 Thread.sleep(100)
                 cprot = MyVpnService.protectSocket(control!!)
             }
-            android.util.Log.d("Tun2Socks", "UdpRelay control protect=$cprot")
-            if (!cprot) {
-                try { control?.close() } catch (_: Exception) {}
-                throw Exception("control protect 실패")
-            }
+            var cbound = false
             LocalHotspotManager.hotspotNetwork?.let { n ->
-                try { n.bindSocket(control!!); android.util.Log.d("Tun2Socks", "UdpRelay bindSocket OK") }
-                catch (e: Exception) { android.util.Log.w("Tun2Socks", "UdpRelay bindSocket FAIL", e) }
+                try { n.bindSocket(control!!); cbound = true; android.util.Log.d("Tun2Socks", "UdpRelay control bindSocket OK") }
+                catch (e: Exception) { android.util.Log.w("Tun2Socks", "UdpRelay control bindSocket FAIL", e) }
+            }
+            android.util.Log.d("Tun2Socks", "UdpRelay control protect=$cprot bound=$cbound")
+            if (!cprot && !cbound) {
+                try { control?.close() } catch (_: Exception) {}
+                throw Exception("control protect+bindSocket 모두 실패")
             }
             try {
                 control!!.connect(InetSocketAddress(host, port), 3000)
@@ -390,14 +391,15 @@ class Tun2Socks(
                 Thread.sleep(100)
                 uprot = MyVpnService.protectSocket(udp!!)
             }
-            android.util.Log.d("Tun2Socks", "UdpRelay udp protect=$uprot")
-            if (!uprot) {
-                try { udp?.close() } catch (_: Exception) {}
-                throw Exception("udp protect 실패")
-            }
+            var ubound = false
             LocalHotspotManager.hotspotNetwork?.let { n ->
-                try { n.bindSocket(udp!!); android.util.Log.d("Tun2Socks", "UdpRelay udp bindSocket OK") }
+                try { n.bindSocket(udp!!); ubound = true; android.util.Log.d("Tun2Socks", "UdpRelay udp bindSocket OK") }
                 catch (e: Exception) { android.util.Log.w("Tun2Socks", "UdpRelay udp bindSocket FAIL", e) }
+            }
+            android.util.Log.d("Tun2Socks", "UdpRelay udp protect=$uprot bound=$ubound")
+            if (!uprot && !ubound) {
+                try { udp?.close() } catch (_: Exception) {}
+                throw Exception("udp protect+bindSocket 모두 실패")
             }
             try { udp!!.sendBufferSize = 262144; udp!!.receiveBufferSize = 262144 } catch (_: Exception) {}
             alive = true
