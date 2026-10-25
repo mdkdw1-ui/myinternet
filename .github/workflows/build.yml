@@ -18,10 +18,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
       - name: Android SDK / NDK
-        run: sdkmanager "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11517263"
+        run: |
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager | head -n 1)
+          echo "sdkmanager: $SDKM"
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0" "ndk;26.3.11517263"
 
       - uses: gradle/actions/setup-gradle@v4
         with:
