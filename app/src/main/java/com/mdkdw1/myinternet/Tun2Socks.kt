@@ -55,6 +55,7 @@ class Tun2Socks(
     private val ourSeqBase = (System.currentTimeMillis() and 0x7FFFFFFF).toInt()
     private val udpNat = ConcurrentHashMap<UdpKey, Long>()
     @Volatile private var udpRelay: UdpRelay? = null
+    @Volatile private var udpRelayFailAt = 0L
 
     fun start() {
         running = true
@@ -255,6 +256,7 @@ class Tun2Socks(
 
     private fun ensureUdpRelay(): UdpRelay? {
         udpRelay?.let { if (it.isAlive) return it }
+        if (System.currentTimeMillis() - udpRelayFailAt < 5000L) return null
         return try {
             UdpRelay(srvHost, srvPort, srvUser, srvPass).also { relay ->
                 relay.start()
@@ -275,6 +277,7 @@ class Tun2Socks(
                 udpRelay = relay
             }
         } catch (e: Exception) {
+            udpRelayFailAt = System.currentTimeMillis()
             android.util.Log.e("Tun2Socks", "ensureUdpRelay 실패: ${e.message}", e)
             null
         }
