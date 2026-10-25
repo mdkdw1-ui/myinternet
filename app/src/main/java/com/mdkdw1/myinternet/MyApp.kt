@@ -11,14 +11,17 @@ class MyApp : Application() {
         super.onCreate()
         
         // 앱이 시작하자마자 죽는 것을 감지하고 파일로 저장
-        Thread.setDefaultUncaughtExceptionHandler { _, e ->
+        Thread.setDefaultUncaughtExceptionHandler { thread, e ->
             try {
                 val sw = StringWriter()
                 e.printStackTrace(PrintWriter(sw))
                 val file = File(filesDir, "crash.txt")
-                file.writeText("=== CRASH ===\n" + sw.toString())
+                file.writeText("=== CRASH thread=${thread.name} ===\n" + sw.toString())
             } catch (_: Exception) {}
-            System.exit(2)
+            // 메인 스레드 크래시만 앱 종료. 백그라운드 스레드 크래시는 로그만 남기고 계속 실행.
+            if (thread == android.os.Looper.getMainLooper().thread) {
+                System.exit(2)
+            }
         }
         
         // 이전에 크래시가 났던 로그가 있으면 앱이 완전히 켜진 후(500ms 뒤) 강제로 팝업 띄우기

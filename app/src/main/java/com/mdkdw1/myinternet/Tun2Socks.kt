@@ -61,11 +61,14 @@ class Tun2Socks(
         running = true
         thread(name = "tun-read") { loop() }
         thread(name = "udp-nat-cleaner") {
-            while (running) {
-                Thread.sleep(30000)
-                val now = System.currentTimeMillis()
-                udpNat.entries.removeIf { now - it.value > 120000 }
-            }
+            try {
+                while (running) {
+                    Thread.sleep(30000)
+                    val now = System.currentTimeMillis()
+                    udpNat.entries.removeIf { now - it.value > 120000 }
+                }
+            } catch (_: InterruptedException) {
+            } catch (_: Exception) {}
         }
     }
 
@@ -95,8 +98,12 @@ class Tun2Socks(
         if (len < ihl + 8) return
         val proto = buf[9].toInt() and 0xFF
         buf[8] = 64.toByte()
-        if (proto == 6) handleTcp(buf, len, ihl)
-        else if (proto == 17) handleUdp(buf, len, ihl)
+        try {
+            if (proto == 6) handleTcp(buf, len, ihl)
+            else if (proto == 17) handleUdp(buf, len, ihl)
+        } catch (e: Exception) {
+            android.util.Log.e("Tun2Socks", "handlePacket crash: ${e.javaClass.simpleName} - ${e.message}", e)
+        }
     }
 
     // ===== TCP =====
@@ -181,18 +188,35 @@ class Tun2Socks(
     }
 
     private fun connectUpstream(c: TcpConn) {
-        val sock = openSocks(c.dstIp, c.dstPort)
-        if (sock == null) { sendTcp(c, 0, c.clientSeq, 0x14, null); conns.remove(c.srcPort); return }
-        c.socket = sock; c.ourSeq = ourSeqBase
-        sendTcp(c, c.ourSeq, c.clientSeq, 0x12, null); c.ourSeq += 1
-        val i = sock.getInputStream()
-        val rb = ByteArray(8192)
-        while (running && !c.closed) {
-            val n = try { i.read(rb) } catch (_: Exception) { -1 }
-            if (n <= 0) break
-            sendTcp(c, c.ourSeq, c.clientSeq, 0x18, rb.copyOfRange(0, n)); c.ourSeq += n
+        try {
+            if (!running || c.closed) { conns.remove(c.srcPort); return }
+            val sock = openSocks(c.dstIp, c.dstPort)
+            if (sock == null) {
+                if (running && !c.closed) sendTcp(c, 0, c.clientSeq, 0x14, null)
+                conns.remove(c.srcPort); return
+            }
+            // openSocks 도중 다른 스레드가 RST 받아 closeConn(c) 를 호출했을 수 있음
+            if (c.closed || !running) {
+                try { sock.close() } catch (_: Exception) {}
+                conns.remove(c.srcPort); return
+            }
+            c.socket = sock; c.ourSeq = ourSeqBase
+            sendTcp(c, c.ourSeq, c.clientSeq, 0x12, null); c.ourSeq += 1
+            val i = try { sock.getInputStream() } catch (e: Exception) {
+                android.util.Log.w("Tun2Socks", "connectUpstream getInputStream fail: ${e.message}")
+                closeConn(c); return
+            }
+            val rb = ByteArray(8192)
+            while (running && !c.closed) {
+                val n = try { i.read(rb) } catch (_: Exception) { -1 }
+                if (n <= 0) break
+                sendTcp(c, c.ourSeq, c.clientSeq, 0x18, rb.copyOfRange(0, n)); c.ourSeq += n
+            }
+            if (running && !c.closed) { sendTcp(c, c.ourSeq, c.clientSeq, 0x11, null); c.ourSeq += 1 }
+        } catch (e: Exception) {
+            android.util.Log.e("Tun2Socks", "connectUpstream crash: ${e.javaClass.simpleName} - ${e.message}", e)
+            try { closeConn(c) } catch (_: Exception) {}
         }
-        sendTcp(c, c.ourSeq, c.clientSeq, 0x11, null); c.ourSeq += 1
     }
 
     private fun closeConn(c: TcpConn) { c.closed = true; try { c.socket?.close() } catch (_: Exception) {}; conns.remove(c.srcPort) }
