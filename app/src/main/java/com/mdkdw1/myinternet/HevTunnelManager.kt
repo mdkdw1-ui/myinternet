@@ -31,7 +31,7 @@ object HevTunnelManager {
             val configFile = File(cacheDir, "hev_config.yml")
             // 공식 conf/main.yml 스키마
             val yaml = "tunnel:\n" +
-                       "  mtu: 1500\n" +
+                       "  mtu: 1200\n" +
                        "  ipv4: 198.18.0.1\n" +
                        "  ipv6: 'fc00::1'\n" +
                        "socks5:\n" +
@@ -41,9 +41,10 @@ object HevTunnelManager {
                        "  username: $user\n" +
                        "  password: $pass\n" +
                        "misc:\n" +
-                       "  log-level: debug\n" +
-                       "  task-stack-size: 86016\n" +
-                       "  connect-timeout: 10000\n"
+                       "  log-level: warn\n" +
+                       "  task-stack-size: 245760\n" +
+                       "  connect-timeout: 10000\n" +
+                       "  read-write-timeout: 60000\n"
             configFile.writeText(yaml)
             Log.i(TAG, "config written (${configFile.length()} bytes): $yaml")
 

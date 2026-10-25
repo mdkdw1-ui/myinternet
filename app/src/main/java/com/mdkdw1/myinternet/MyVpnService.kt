@@ -93,7 +93,7 @@ class MyVpnService : VpnService() {
 
             builder.setUnderlyingNetworks(arrayOf(underlying))
             builder.addDnsServer("1.1.1.1")
-            builder.setMtu(1500)
+            builder.setMtu(1200)  // QUIC(1250B) outer overhead 포함 MTU 안전화
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
 
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
