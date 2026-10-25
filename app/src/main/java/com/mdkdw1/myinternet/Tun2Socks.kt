@@ -318,10 +318,19 @@ class Tun2Socks(
         fun start() {
             android.util.Log.d("Tun2Socks", "UdpRelay.start: $host:$port")
             control = Socket()
-            val cprot = MyVpnService.protectSocket(control!!)
+            var cprot = MyVpnService.protectSocket(control!!)
+            if (!cprot) {
+                Thread.sleep(100)
+                cprot = MyVpnService.protectSocket(control!!)
+                android.util.Log.w("Tun2Socks", "protect 재시도 결과=$cprot")
+            }
             android.util.Log.d("Tun2Socks", "UdpRelay control protect=$cprot")
+            LocalHotspotManager.hotspotNetwork?.let { n ->
+                try { n.bindSocket(control!!); android.util.Log.d("Tun2Socks", "UdpRelay bindSocket OK") }
+                catch (e: Exception) { android.util.Log.w("Tun2Socks", "UdpRelay bindSocket FAIL", e) }
+            }
             try {
-                control!!.connect(InetSocketAddress(host, port), 20000)
+                control!!.connect(InetSocketAddress(host, port), 3000)
                 android.util.Log.d("Tun2Socks", "UdpRelay control connected")
             } catch (e: Exception) {
                 android.util.Log.e("Tun2Socks", "UdpRelay control connect FAIL", e)
@@ -347,8 +356,16 @@ class Tun2Socks(
             android.util.Log.d("Tun2Socks", "UdpRelay ASSOCIATE OK relay=${relayAddr}:${relayPort}")
 
             udp = DatagramSocket()
-            val uprot = MyVpnService.protectSocket(udp!!)
+            var uprot = MyVpnService.protectSocket(udp!!)
+            if (!uprot) {
+                Thread.sleep(100)
+                uprot = MyVpnService.protectSocket(udp!!)
+            }
             android.util.Log.d("Tun2Socks", "UdpRelay udp protect=$uprot")
+            LocalHotspotManager.hotspotNetwork?.let { n ->
+                try { n.bindSocket(udp!!); android.util.Log.d("Tun2Socks", "UdpRelay udp bindSocket OK") }
+                catch (e: Exception) { android.util.Log.w("Tun2Socks", "UdpRelay udp bindSocket FAIL", e) }
+            }
             try { udp!!.sendBufferSize = 262144; udp!!.receiveBufferSize = 262144 } catch (_: Exception) {}
             alive = true
             thread(name = "udp-recv") { recvLoop() }
