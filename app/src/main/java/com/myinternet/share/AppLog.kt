@@ -46,6 +46,13 @@ object AppLog {
         "(logcat 실패: ${e.message})"
     }
 
+    fun readCrashBuffer(): String = try {
+        val p = Runtime.getRuntime().exec(arrayOf("logcat", "-d", "-b", "crash", "-v", "time", "-t", "200"))
+        p.inputStream.bufferedReader().readText()
+    } catch (e: Exception) {
+        "(crash 버퍼 읽기 실패: ${e.message})"
+    }
+
     fun clear(ctx: Context) {
         try { File(ctx.filesDir, "app.log").delete() } catch (_: Exception) {}
         try { File(ctx.filesDir, "hev.log").delete() } catch (_: Exception) {}

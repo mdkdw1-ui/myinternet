@@ -29,6 +29,9 @@ class VpnClientService : VpnService() {
     private fun startTunnel(host: String) {
         stopTunnel()
         try {
+            AppLog.i("vpn", "native 로드 시도")
+            Class.forName("hev.htproxy.TProxyService")
+            AppLog.i("vpn", "native 로드 OK")
             val fd = Builder()
                 .setSession("MyInternet")
                 .setMtu(1500)

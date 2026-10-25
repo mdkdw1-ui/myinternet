@@ -54,6 +54,7 @@ class LogActivity : Activity() {
             val sb = StringBuilder()
             sb.append("=== app.log ===\n").append(AppLog.readFile(this, "app.log"))
             sb.append("\n=== hev.log ===\n").append(AppLog.readFile(this, "hev.log"))
+            sb.append("\n=== crash 버퍼 ===\n").append(AppLog.readCrashBuffer())
             sb.append("\n=== logcat (이 앱) ===\n").append(AppLog.readLogcat())
             text = sb.toString().takeLast(200_000)
             runOnUiThread {
