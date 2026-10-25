@@ -40,9 +40,8 @@ class MyVpnService : VpnService() {
 
     private fun startVpn() {
         startForeground(NOTIFICATION_ID, buildNotification("VPN 연결 준비 중..."))
-        try {
-            startVpnInternal()
-        } catch (e: Throwable) {
+        try { startVpnInternal() }
+        catch (e: Throwable) {
             lastError = "VPN 시작 오류: ${e.javaClass.simpleName} - ${e.message}"
             Log.e("MyVpn", "startVpn error", e)
             try { stopVpn() } catch (_: Exception) {}
@@ -54,8 +53,14 @@ class MyVpnService : VpnService() {
         if (isRunning) return
         lastError = null
 
-        if (!HevTunnelManager.isLibLoaded()) {
-            lastError = "hev 라이브러리 미탑재"
+        // hev 라이브러리 로드 확인 (ClassNotFound/UnsatisfiedLink 방어)
+        val libLoaded = try { HevTunnelManager.isLibLoaded() } catch (e: Throwable) {
+            lastError = "HevTunnelManager 초기화 실패: ${e.javaClass.simpleName}"
+            Log.e("MyVpn", "HevTunnelManager access failed", e)
+            false
+        }
+        if (!libLoaded) {
+            lastError = lastError ?: "hev 라이브러리 미탑재"
             stopSelf(); return
         }
 
@@ -63,56 +68,53 @@ class MyVpnService : VpnService() {
         val host = s.srvHost; val port = s.srvPort
         val user = s.srvUser; val pass = s.srvPass
         if (host.isBlank() || user.isBlank() || pass.isBlank()) {
-            lastError = "서버 정보 없음"; stopSelf(); return
+            lastError = "서버 정보가 없습니다"; stopSelf(); return
         }
 
         val underlying = LocalHotspotManager.hotspotNetwork
         if (underlying == null) {
-            lastError = "핫스팟 네트워크 미준비"
-            stopSelf(); return
+            lastError = "핫스팟 네트워크 미준비"; stopSelf(); return
         }
 
         try {
             val builder = Builder()
             builder.setSession("MyInternet")
             builder.addAddress("10.0.0.2", 32)
-            builder.addRoute("0.0.0.0", 0)
             builder.addAddress("fd00::1", 128)
+            builder.addRoute("0.0.0.0", 0)
 
-            // 서버 IP 우회 라우트
+            // 서버 IP 우회 (VPN 루프 방지)
             try {
                 val serverIp = java.net.InetAddress.getByName(host).hostAddress
                 if (serverIp != null && !serverIp.contains(":")) {
                     builder.addRoute(serverIp, 32)
-                    Log.i("MyVpn", "bypass route: $serverIp/32")
                 }
             } catch (_: Exception) {}
 
-            // 내 앱 소켓은 VPN 안 탐
             try { builder.addDisallowedApplication(packageName) } catch (_: Exception) {}
 
             builder.setUnderlyingNetworks(arrayOf(underlying))
             builder.addDnsServer("1.1.1.1")
-            builder.setMtu(1200)  // QUIC(1250B) outer overhead 포함 MTU 안전화
+            builder.setMtu(1280)  // Android 최소 MTU. 1200은 일부 기기에서 거부
             if (Build.VERSION.SDK_INT >= 29) builder.setMetered(false)
 
             val pfd = builder.establish() ?: run { lastError = "TUN 생성 실패"; stopSelf(); return }
             tun = pfd
+            Log.d("MyVpn", "TUN established, fd=${pfd.fd}")
 
-            Log.d("MyVpn", "Hev 시작: host=$host port=$port fd=${pfd.fd}")
             val started = HevTunnelManager.start(pfd.fd, host, port, user, pass, cacheDir)
             if (!started) {
                 lastError = HevTunnelManager.lastError ?: "hev 시작 실패"
-                android.widget.Toast.makeText(this, "VPN 실패: $lastError", android.widget.Toast.LENGTH_LONG).show()
+                Log.e("MyVpn", "Hev start failed: $lastError")
                 try { pfd.close() } catch (_: Exception) {}
                 tun = null; isRunning = false
-                if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(); return
             }
+
             isRunning = true
             val nm = getSystemService(NotificationManager::class.java)
             nm.notify(NOTIFICATION_ID, buildNotification("VPN 연결됨 · $host:$port"))
-            Log.i("MyVpn", "VPN running (hev); underlying=$underlying")
+            Log.i("MyVpn", "VPN running; hev started; underlying=$underlying")
         } catch (e: Exception) {
             lastError = e.message
             try { tun?.close() } catch (_: Exception) {}

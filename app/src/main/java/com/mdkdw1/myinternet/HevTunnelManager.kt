@@ -15,7 +15,7 @@ object HevTunnelManager {
             libLoaded = true
             Log.i(TAG, "libhev-socks5-tunnel loaded")
         } catch (e: Throwable) {
-            lastError = "라이브러리 로드 실패: ${e.message}"
+            lastError = "라이브러리 로드 실패: ${e.javaClass.simpleName} - ${e.message}"
             Log.e(TAG, "loadLibrary failed", e)
         }
     }
@@ -29,9 +29,9 @@ object HevTunnelManager {
 
         return try {
             val configFile = File(cacheDir, "hev_config.yml")
-            // 공식 conf/main.yml 스키마
+            // 공식 스키마: tunnel.mtu는 크게, misc는 tcp/udp 개별 timeout
             val yaml = "tunnel:\n" +
-                       "  mtu: 1200\n" +
+                       "  mtu: 8500\n" +
                        "  ipv4: 198.18.0.1\n" +
                        "  ipv6: 'fc00::1'\n" +
                        "socks5:\n" +
@@ -41,12 +41,13 @@ object HevTunnelManager {
                        "  username: $user\n" +
                        "  password: $pass\n" +
                        "misc:\n" +
-                       "  log-level: warn\n" +
-                       "  task-stack-size: 245760\n" +
+                       "  log-level: debug\n" +
+                       "  task-stack-size: 86016\n" +
                        "  connect-timeout: 10000\n" +
-                       "  read-write-timeout: 60000\n"
+                       "  tcp-read-write-timeout: 300000\n" +
+                       "  udp-read-write-timeout: 60000\n"
             configFile.writeText(yaml)
-            Log.i(TAG, "config written (${configFile.length()} bytes): $yaml")
+            Log.i(TAG, "config written (${configFile.length()} bytes)")
 
             hev.htproxy.TProxyService.TProxyStartService(configFile.absolutePath, tunFd)
             running = true
