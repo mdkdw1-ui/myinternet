@@ -109,9 +109,7 @@ class Tun2Socks(
         }
     }
 
-    private fun newSocket(): Socket = try {
-        java.nio.channels.SocketChannel.open(java.net.StandardProtocolFamily.INET).socket()
-    } catch (_: Exception) { Socket() }
+    private fun newSocket(): Socket = Socket()
 
     private fun openSocks(dstIp: Int, dstPort: Int): Socket? {
         val sock = newSocket()
