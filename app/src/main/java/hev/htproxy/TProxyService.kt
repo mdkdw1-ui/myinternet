@@ -8,11 +8,15 @@ class TProxyService {
 
         @JvmStatic
         @Suppress("FunctionName")
-        external fun TProxyStartService(configPath: String, fd: Int): Boolean
+        external fun TProxyStartService(p0: String, p1: Int): Boolean
 
         @JvmStatic
         @Suppress("FunctionName")
         external fun TProxyStopService(): Boolean
+
+        @JvmStatic
+        @Suppress("FunctionName")
+        external fun TProxyIsRunning(): Boolean
 
         @JvmStatic
         @Suppress("FunctionName")
