@@ -511,7 +511,7 @@ class MainActivity : Activity() {
         label("클라이언트 (유심 없는 폰)")
         hostEt = EditText(this).apply {
             hint = "서버 IP"
-            setText(gateway())
+            setText(NetUtil.serverHost(this@MainActivity))
         }
         root.addView(hostEt)
         btn("연결") {
@@ -534,6 +534,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (::hostEt.isInitialized && (hostEt.text.isNullOrBlank() || hostEt.text.toString() == NetUtil.FALLBACK)) hostEt.setText(NetUtil.serverHost(this@MainActivity))
         refresh()
     }
 
@@ -622,6 +623,63 @@ class MainActivity : Activity() {
         }.joinToString("\n")
     } catch (e: Exception) {
         ""
+    }
+}
+-e 
+
+===== ./app/src/main/java/com/myinternet/share/NetUtil.kt =====
+package com.myinternet.share
+
+import android.content.Context
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.net.wifi.WifiManager
+import java.net.Inet4Address
+
+object NetUtil {
+    const val FALLBACK = "192.168.43.1"
+
+    // 현재 붙어 있는 Wi-Fi(핫스팟)의 게이트웨이 = 서버 폰 IP
+    fun serverHost(ctx: Context): String {
+        try {
+            val cm = ctx.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            for (n in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(n) ?: continue
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                val lp = cm.getLinkProperties(n) ?: continue
+
+                // 1순위: 기본 라우트의 게이트웨이
+                for (r in lp.routes) {
+                    val g = r.gateway
+                    if (r.isDefaultRoute && g is Inet4Address && !g.isAnyLocalAddress) {
+                        AppLog.i("net", "서버 IP(게이트웨이) = ${g.hostAddress} iface=${lp.interfaceName}")
+                        return g.hostAddress!!
+                    }
+                }
+                // 2순위: 내 IP 대역의 .1
+                for (la in lp.linkAddresses) {
+                    val a = la.address
+                    if (a is Inet4Address) {
+                        val b = a.address
+                        val guess = "${b[0].toInt() and 255}.${b[1].toInt() and 255}.${b[2].toInt() and 255}.1"
+                        AppLog.i("net", "게이트웨이 없음, 내 IP ${a.hostAddress} 기준 추정 = $guess")
+                        return guess
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            AppLog.e("net", "서버 IP 탐지 실패", t)
+        }
+        try {
+            val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            @Suppress("DEPRECATION")
+            val g = wm.dhcpInfo.gateway
+            if (g != 0) return "${g and 255}.${(g shr 8) and 255}.${(g shr 16) and 255}.${(g shr 24) and 255}"
+        } catch (_: Throwable) {
+        }
+        AppLog.i("net", "탐지 실패, 기본값 $FALLBACK 사용")
+        return FALLBACK
     }
 }
 -e 
@@ -741,6 +799,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -823,27 +882,49 @@ class Socks5Server(private val port: Int) {
         o.flush()
     }
 
+    // 도메인/IP 문자열 -> 주소 목록 (IPv4 먼저)
+    private fun resolve(host: String): List<InetAddress> =
+        InetAddress.getAllByName(host).sortedBy { if (it is Inet4Address) 0 else 1 }
+
     private fun tcpConnect(c: Socket, i: InputStream, o: OutputStream, host: String, dport: Int) {
-        AppLog.i("srv", "CONNECT ${c.inetAddress.hostAddress} -> $host:$dport")
-        val r = Socket()
-        try {
-            r.connect(InetSocketAddress(host, dport), 10000)
-            r.tcpNoDelay = true
-        } catch (e: Exception) {
-            AppLog.e("srv", "CONNECT 실패 $host:$dport ${e.javaClass.simpleName} ${e.message}")
-            try { r.close() } catch (_: Exception) {}
+        // mapdns 주소(198.18.*)로 오는 DoT 등은 바로 거절 (타임아웃 대기 방지)
+        if (host.startsWith("198.18.")) {
             reply(o, 5)
             return
         }
+        var r: Socket? = null
+        var err: Exception? = null
+        try {
+            for (a in resolve(host).take(3)) {
+                val s = Socket()
+                try {
+                    s.connect(InetSocketAddress(a, dport), if (a is Inet4Address) 7000 else 3000)
+                    r = s
+                    break
+                } catch (e: Exception) {
+                    err = e
+                    try { s.close() } catch (_: Exception) {}
+                }
+            }
+        } catch (e: Exception) {
+            err = e
+        }
+        val rs = r
+        if (rs == null) {
+            AppLog.e("srv", "CONNECT 실패 $host:$dport ${err?.javaClass?.simpleName} ${err?.message}")
+            reply(o, 5)
+            return
+        }
+        rs.tcpNoDelay = true
         reply(o, 0)
         val t = thread(isDaemon = true) {
-            try { r.getInputStream().copyTo(o, 65536) } catch (_: Exception) {}
+            try { rs.getInputStream().copyTo(o, 65536) } catch (_: Exception) {}
             try { c.shutdownOutput() } catch (_: Exception) {}
         }
-        try { i.copyTo(r.getOutputStream(), 65536) } catch (_: Exception) {}
-        try { r.shutdownOutput() } catch (_: Exception) {}
+        try { i.copyTo(rs.getOutputStream(), 65536) } catch (_: Exception) {}
+        try { rs.shutdownOutput() } catch (_: Exception) {}
         t.join(3000)
-        try { r.close() } catch (_: Exception) {}
+        try { rs.close() } catch (_: Exception) {}
     }
 
     private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, InetAddress>()
@@ -890,7 +971,12 @@ class Socks5Server(private val port: Int) {
                                 val l = buf[idx++].toInt() and 255
                                 val h = String(buf, idx, l)
                                 idx += l
-                                dnsCache.getOrPut(h) { InetAddress.getByName(h) }
+                                try {
+                                    dnsCache.getOrPut(h) { resolve(h).first() }
+                                } catch (e: Exception) {
+                                    // 해석 실패한 패킷만 버리고 릴레이는 계속 유지
+                                    continue
+                                }
                             }
                             else -> continue
                         }
@@ -1044,7 +1130,7 @@ class VpnClientService : VpnService() {
                 .setMtu(1500)
                 .addAddress("198.18.0.1", 32)
                 .addRoute("0.0.0.0", 0)
-                .addDnsServer("8.8.8.8")
+                .addDnsServer("198.18.0.2")
                 .addDisallowedApplication(packageName)
                 .establish()
             if (fd == null) {
@@ -1076,9 +1162,16 @@ class VpnClientService : VpnService() {
                   address: $host
                   port: ${ServerService.PORT}
                   udp: 'udp'
+                  pipeline: true
+                mapdns:
+                  address: 198.18.0.2
+                  port: 53
+                  network: 100.64.0.0
+                  netmask: 255.192.0.0
+                  cache-size: 10000
                 misc:
                   log-file: ${logFile.absolutePath}
-                  log-level: debug
+                  log-level: warn
                 """.trimIndent() + "\n"
             )
             AppLog.i("vpn", "hev 설정:\n" + cfg.readText())
