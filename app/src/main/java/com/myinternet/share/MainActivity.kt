@@ -7,10 +7,10 @@ import android.content.Intent
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.ConnectivityManager
-import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.net.VpnService
+import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.Bundle
@@ -28,6 +28,7 @@ class MainActivity : Activity() {
     private lateinit var statusDesc: TextView
     private lateinit var btnServer: Button
     private lateinit var btnClient: Button
+    private lateinit var btnScan: Button
     private lateinit var qrView: ImageView
     private var lastQr = ""
     private var isClientMode = false
@@ -37,7 +38,7 @@ class MainActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNecessaryPermissions()
-        buildUI()
+        buildPremiumUI()
     }
 
     private fun requestNecessaryPermissions() {
@@ -52,7 +53,7 @@ class MainActivity : Activity() {
         requestPermissions(perms.toTypedArray(), 1)
     }
 
-    private fun buildUI() {
+    private fun buildPremiumUI() {
         val pad = (24 * resources.displayMetrics.density).toInt()
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -64,7 +65,7 @@ class MainActivity : Activity() {
             setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
         })
 
-        val card = LinearLayout(this).apply {
+        val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
             setPadding(pad, pad, pad, pad); setElevation(10f)
         }
@@ -73,70 +74,57 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#333333")); gravity = Gravity.CENTER
         }
         statusDesc = TextView(this).apply {
-            text = "버튼을 눌러 시작하세요"; textSize = 14f
+            text = "아래 버튼을 눌러 시작하세요"; textSize = 14f
             setTextColor(Color.parseColor("#666666")); gravity = Gravity.CENTER; setPadding(0, 8, 0, 0)
         }
-        card.addView(statusTitle); card.addView(statusDesc)
-        root.addView(card, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, pad, 0, pad) })
+        statusCard.addView(statusTitle); statusCard.addView(statusDesc)
+        root.addView(statusCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, pad, 0, pad) })
 
-        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnServer = Button(this).apply {
-            text = "서버 시작\n(데이터 폰)"; textSize = 16f
-            setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE)
+            text = "서버 시작\n(데이터 폰)"; textSize = 16f; setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE)
             setOnClickListener { startServerMode() }
         }
         btnClient = Button(this).apply {
-            text = "원터치 연결\n(QR 스캔)"; textSize = 16f
-            setBackgroundColor(Color.parseColor("#2E7D32")); setTextColor(Color.WHITE)
-            setOnClickListener { if (isClientMode) stopVpn() else startOneTouchConnect() }
+            text = "수동 연결\n(IP 입력)"; textSize = 16f; setBackgroundColor(Color.parseColor("#2E7D32")); setTextColor(Color.WHITE)
+            setOnClickListener { startClientMode() }
         }
-        row.addView(btnServer, LinearLayout.LayoutParams(0, (80 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(8, 0, 8, 0) })
-        row.addView(btnClient, LinearLayout.LayoutParams(0, (80 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(8, 0, 8, 0) })
-        root.addView(row)
+        btnRow.addView(btnServer, LinearLayout.LayoutParams(0, (80 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(8, 0, 8, 0) })
+        btnRow.addView(btnClient, LinearLayout.LayoutParams(0, (80 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(8, 0, 8, 0) })
+        root.addView(btnRow)
+
+        btnScan = Button(this).apply {
+            text = "QR 코드 스캔하여 자동 연결"; textSize = 16f; setBackgroundColor(Color.parseColor("#F57C00")); setTextColor(Color.WHITE)
+            setOnClickListener { startQrScanLegacy() }
+        }
+        root.addView(btnScan, LinearLayout.LayoutParams(-1, (60 * resources.displayMetrics.density).toInt()).apply { setMargins(8, pad, 8, 0) })
 
         hostEt = EditText(this).apply {
-            hint = "수동 IP (선택)"; inputType = InputType.TYPE_CLASS_TEXT
-            visibility = View.GONE; gravity = Gravity.CENTER
-            setPadding(0, pad, 0, pad)
+            hint = "서버 IP 주소"; inputType = InputType.TYPE_CLASS_TEXT
+            setText(NetUtil.serverHost(this@MainActivity)); visibility = View.GONE
+            gravity = Gravity.CENTER; setPadding(0, pad, 0, pad)
         }
         root.addView(hostEt)
 
-        val manualBtn = Button(this).apply {
-            text = "수동 IP로 연결"; textSize = 13f
-            setBackgroundColor(Color.parseColor("#757575")); setTextColor(Color.WHITE)
-            setOnClickListener {
-                if (hostEt.visibility == View.GONE) {
-                    hostEt.visibility = View.VISIBLE
-                } else {
-                    val h = hostEt.text.toString().trim()
-                    if (h.isNotEmpty()) requestVpnAndStart(h)
-                }
-            }
-        }
-        root.addView(manualBtn, LinearLayout.LayoutParams(-1, (50 * resources.displayMetrics.density).toInt()).apply { setMargins(8, 8, 8, 0) })
-
         qrView = ImageView(this).apply { visibility = View.GONE; scaleType = ImageView.ScaleType.FIT_CENTER }
-        root.addView(qrView, LinearLayout.LayoutParams((220 * resources.displayMetrics.density).toInt(), (220 * resources.displayMetrics.density).toInt()).apply { gravity = Gravity.CENTER; setMargins(0, pad, 0, pad) })
+        root.addView(qrView, LinearLayout.LayoutParams((200 * resources.displayMetrics.density).toInt(), (200 * resources.displayMetrics.density).toInt()).apply { gravity = Gravity.CENTER; setMargins(0, pad, 0, pad) })
 
         root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) })
 
-        val util = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        fun u(t: String, f: () -> Unit) = Button(this).apply {
-            text = t; textSize = 12f; setBackgroundColor(Color.TRANSPARENT)
-            setTextColor(Color.parseColor("#1565C0")); setOnClickListener { f() }
+        val utilRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
+        fun utilBtn(t: String, f: () -> Unit) = Button(this).apply {
+            text = t; textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0")); setOnClickListener { f() }
         }
-        util.addView(u("로그") { startActivity(Intent(this, LogActivity::class.java)) })
-        util.addView(u("설정") { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) })
-        util.addView(u("테스트") { runTest(hostEt.text.toString().trim()) })
-        root.addView(util)
+        utilRow.addView(utilBtn("로그") { startActivity(Intent(this, LogActivity::class.java)) })
+        utilRow.addView(utilBtn("설정") { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) })
+        utilRow.addView(utilBtn("테스트") { runTest(hostEt.text.toString().trim()) })
+        root.addView(utilRow)
 
         setContentView(ScrollView(this).apply { addView(root) })
         refresh()
     }
 
-    // ===== 원터치 연결: QR 스캔 시작 =====
-    private fun startOneTouchConnect() {
-        updateStatus("QR 스캔 준비", "서버 폰의 QR을 비춰주세요", Color.parseColor("#F57C00"))
+    private fun startQrScanLegacy() {
         val integrator = IntentIntegrator(this)
         integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
         integrator.setPrompt("서버 폰의 Wi-Fi QR 코드를 스캔하세요")
@@ -151,118 +139,114 @@ class MainActivity : Activity() {
                 val host = qrText.trim()
                 if (host.matches(Regex("^[0-9.]+(:[0-9]+)?$"))) {
                     hostEt.setText(host.substringBefore(":"))
-                    updateStatus("IP 인식", "서버 $host", Color.parseColor("#F57C00"))
-                    requestVpnAndStart(host.substringBefore(":"))
-                } else {
-                    updateStatus("QR 오류", "Wi-Fi 또는 IP QR이 아닙니다", Color.RED)
+                    requestVpnPermissionAndStart(host.substringBefore(":"))
+                    return
                 }
-                return
+                updateStatus("QR 오류", "Wi-Fi QR이 아닙니다.", Color.RED); return
             }
             val ssid = Regex("S:([^;]+)").find(qrText)?.groupValues?.get(1)?.replace("\\\\", "\\") ?: return
             val pass = Regex("P:([^;]+)").find(qrText)?.groupValues?.get(1)?.replace("\\\\", "\\") ?: ""
-            AppLog.i("ui", "QR 스캔 ssid=$ssid")
             updateStatus("Wi-Fi 연결 중...", "SSID: $ssid", Color.parseColor("#F57C00"))
             connectToWifi(ssid, pass)
         } catch (t: Throwable) {
-            AppLog.e("ui", "QR 처리 실패", t)
             updateStatus("QR 오류", t.message ?: "해석 실패", Color.RED)
         }
     }
 
-    // ===== 자동 Wi-Fi 연결 =====
     private fun connectToWifi(ssid: String, pass: String) {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val spec = WifiNetworkSpecifier.Builder().setSsid(ssid)
+                val specifier = WifiNetworkSpecifier.Builder().setSsid(ssid)
                     .apply { if (pass.isNotEmpty()) setWpa2Passphrase(pass) }.build()
-                val req = NetworkRequest.Builder()
-                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                    .setNetworkSpecifier(spec).build()
+                val request = NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI).setNetworkSpecifier(specifier).build()
                 val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
                 wifiCallback = object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(network: Network) {
+                    override fun onAvailable(network: android.net.Network) {
                         runOnUiThread {
-                            updateStatus("Wi-Fi 연결됨", "서버 IP 확인 중...", Color.parseColor("#2E7D32"))
+                            AppLog.i("ui", "onAvailable network=$network")
+                            updateStatus("Wi-Fi 연결됨", "IP 확인 중...", Color.parseColor("#2E7D32"))
                             statusDesc.postDelayed({
-                                val host = NetUtil.serverHost(this@MainActivity)
+                                // ★★ 핵심: 스펙파이어 네트워크에서 직접 IP를 얻는다
+                                val host = NetUtil.serverHostFromNetwork(this@MainActivity, network)
                                 hostEt.setText(host)
-                                AppLog.i("ui", "자동 IP=$host")
+                                AppLog.i("ui", "QR 자동 IP = $host")
+
+                                // ★★ 그 네트워크를 앱 기본으로 바인딩
+                                try {
+                                    cm.bindProcessToNetwork(network)
+                                    AppLog.i("ui", "bindProcessToNetwork OK")
+                                } catch (t: Throwable) {
+                                    AppLog.e("ui", "bindProcessToNetwork 실패", t)
+                                }
+
                                 updateStatus("VPN 연결 중...", "서버 $host", Color.parseColor("#F57C00"))
-                                requestVpnAndStart(host)
-                            }, 1500)
+                                requestVpnPermissionAndStart(host)
+                            }, 1200)
                         }
                     }
                     override fun onUnavailable() {
-                        runOnUiThread {
-                            updateStatus("Wi-Fi 실패", "수동으로 와이파이 연결 후 다시 시도하세요", Color.RED)
-                        }
+                        runOnUiThread { updateStatus("Wi-Fi 실패", "수동 연결 필요", Color.RED) }
                     }
                 }
-                cm.requestNetwork(req, wifiCallback!!)
+                cm.requestNetwork(request, wifiCallback!!)
             } else {
-                updateStatus("수동 연결 필요", "설정에서 '$ssid' 연결 후 다시 시도", Color.parseColor("#F57C00"))
+                updateStatus("수동 연결", "설정에서 연결하세요", Color.parseColor("#F57C00"))
                 startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
             }
         } catch (t: Throwable) {
-            AppLog.e("ui", "Wi-Fi 실패", t)
             updateStatus("Wi-Fi 오류", t.message ?: "오류", Color.RED)
         }
     }
 
-    // ===== VPN 권한 요청 → 시작 =====
-    private fun requestVpnAndStart(host: String) {
-        val prep = VpnService.prepare(this)
-        if (prep != null) {
-            pendingHost = host
-            @Suppress("DEPRECATION")
-            startActivityForResult(prep, 100)
-        } else {
-            startVpn(host)
-        }
-    }
-
-    private fun startVpn(host: String) {
-        try {
-            startService(Intent(this, VpnClientService::class.java).putExtra("host", host))
-            isClientMode = true
-            updateStatus("연결 완료", "서버 $host 로 우회 중", Color.parseColor("#2E7D32"))
-        } catch (t: Throwable) {
-            AppLog.e("ui", "VPN 실패", t)
-            updateStatus("오류", t.message ?: "VPN 실패", Color.RED)
-        }
-        refresh()
-    }
-
-    private fun stopVpn() {
-        startService(Intent(this, VpnClientService::class.java).setAction("stop"))
-        isClientMode = false
-        updateStatus("대기 중", "연결 해제됨", Color.parseColor("#333333"))
-        refresh()
-    }
-
-    // ===== 서버 모드 =====
     private fun startServerMode() {
         if (ServerService.running) {
-            LocalHotspot.stop()
-            stopService(Intent(this, ServerService::class.java))
+            LocalHotspot.stop(); stopService(Intent(this, ServerService::class.java))
             updateStatus("대기 중", "서버 중지됨", Color.parseColor("#333333"))
-            qrView.visibility = View.GONE
         } else {
-            updateStatus("서버 시작 중...", "핫스팟 활성화", Color.parseColor("#F57C00"))
+            updateStatus("서버 시작 중...", "핫스팟 활성화 중", Color.parseColor("#F57C00"))
             LocalHotspot.start(this) { ok ->
                 if (ok) {
                     try {
                         startForegroundService(Intent(this, ServerService::class.java))
                         updateStatus("서버 실행 중", "SSID: ${LocalHotspot.ssid}\nPW: ${LocalHotspot.pass}", Color.parseColor("#1565C0"))
                         showQr()
-                    } catch (t: Throwable) {
-                        updateStatus("오류", t.message ?: "실패", Color.RED)
-                    }
+                    } catch (t: Throwable) { updateStatus("오류", t.message ?: "실패", Color.RED) }
                 } else updateStatus("실패", "핫스팟 불가", Color.RED)
             }
         }
         refresh()
+    }
+
+    private fun startClientMode() {
+        if (isClientMode) {
+            startService(Intent(this, VpnClientService::class.java).setAction("stop"))
+            isClientMode = false; updateStatus("대기 중", "연결 해제됨", Color.parseColor("#333333"))
+        } else {
+            hostEt.visibility = View.VISIBLE
+            val host = hostEt.text.toString().trim()
+            if (host.isEmpty()) { Toast.makeText(this, "IP 입력 필요", Toast.LENGTH_SHORT).show(); return }
+            requestVpnPermissionAndStart(host)
+        }
+        refresh()
+    }
+
+    private fun requestVpnPermissionAndStart(host: String) {
+        val prep = VpnService.prepare(this)
+        if (prep != null) { pendingHost = host; @Suppress("DEPRECATION") startActivityForResult(prep, 100) }
+        else startVpn(host)
+    }
+
+    private fun startVpn(host: String) {
+        try {
+            startService(Intent(this, VpnClientService::class.java).putExtra("host", host))
+            isClientMode = true; updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
+        } catch (t: Throwable) { updateStatus("오류", t.message ?: "VPN 실패", Color.RED) }
+    }
+
+    private fun updateStatus(title: String, desc: String, color: Int) {
+        statusTitle.text = title; statusTitle.setTextColor(color); statusDesc.text = desc
     }
 
     private fun showQr() {
@@ -274,40 +258,42 @@ class MainActivity : Activity() {
         qrView.visibility = View.VISIBLE
     }
 
-    private fun updateStatus(t: String, d: String, c: Int) {
-        statusTitle.text = t; statusTitle.setTextColor(c); statusDesc.text = d
-    }
-
-    // ===== QR 결과 & VPN 결과 처리 =====
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        val qr: IntentResult? = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
-        if (qr != null) {
-            if (qr.contents == null) updateStatus("스캔 취소", "QR 스캔 취소됨", Color.GRAY)
-            else handleWifiQr(qr.contents)
-            return
-        }
-        if (requestCode == 100) {
+        val result: IntentResult? = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (result != null) {
+            if (result.contents == null) {
+                updateStatus("스캔 취소", "QR 스캔이 취소되었습니다.", Color.GRAY)
+            } else {
+                handleWifiQr(result.contents)
+            }
+        } else if (requestCode == 100) {
             if (resultCode == Activity.RESULT_OK) startVpn(pendingHost)
             else updateStatus("권한 거부", "VPN 필요", Color.RED)
-            return
+        } else {
+            super.onActivityResult(requestCode, resultCode, data)
         }
-        super.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun runTest(host: String) {
         if (host.isEmpty()) return
         Toast.makeText(this, "테스트 중...", Toast.LENGTH_SHORT).show()
         Thread {
-            val msg = "TCP: ${Socks5Test.tcp(host, ServerService.PORT)}\nUDP: ${Socks5Test.udp(host, ServerService.PORT)}"
+            val msg = "대상: $host\nTCP: ${Socks5Test.tcp(host, ServerService.PORT)}\nUDP: ${Socks5Test.udp(host, ServerService.PORT)}"
             runOnUiThread { AlertDialog.Builder(this).setTitle("결과").setMessage(msg).setPositiveButton("확인", null).show() }
         }.start()
     }
 
     private fun refresh() {
-        btnServer.text = if (ServerService.running) "서버 중지" else "서버 시작\n(데이터 폰)"
-        btnServer.setBackgroundColor(Color.parseColor(if (ServerService.running) "#C62828" else "#1565C0"))
-        btnClient.text = if (isClientMode) "연결 해제" else "원터치 연결\n(QR 스캔)"
-        btnClient.setBackgroundColor(Color.parseColor(if (isClientMode) "#C62828" else "#2E7D32"))
+        if (ServerService.running) {
+            btnServer.text = "서버 중지"; btnServer.setBackgroundColor(Color.parseColor("#C62828"))
+        } else {
+            btnServer.text = "서버 시작\n(데이터 폰)"; btnServer.setBackgroundColor(Color.parseColor("#1565C0"))
+        }
+        if (isClientMode) {
+            btnClient.text = "연결 해제"; btnClient.setBackgroundColor(Color.parseColor("#C62828"))
+        } else {
+            btnClient.text = "수동 연결\n(IP 입력)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
+        }
     }
 }

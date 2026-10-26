@@ -2,6 +2,7 @@ package com.myinternet.share
 
 import android.content.Context
 import android.net.ConnectivityManager
+import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.wifi.WifiManager
 import java.net.Inet4Address
@@ -9,7 +10,34 @@ import java.net.Inet4Address
 object NetUtil {
     const val FALLBACK = "192.168.43.1"
 
-    // 현재 붙어 있는 Wi-Fi(핫스팟)의 게이트웨이 = 서버 폰 IP
+    // ★ 특정 Network(스펙파이어로 막 연결한 그 네트워크)에서 게이트웨이를 얻는다
+    fun serverHostFromNetwork(ctx: Context, network: Network): String {
+        try {
+            val cm = ctx.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val lp = cm.getLinkProperties(network) ?: return serverHost(ctx)
+
+            for (r in lp.routes) {
+                val g = r.gateway
+                if (r.isDefaultRoute && g is Inet4Address && !g.isAnyLocalAddress) {
+                    AppLog.i("net", "특정 네트워크 게이트웨이 = ${g.hostAddress} iface=${lp.interfaceName}")
+                    return g.hostAddress!!
+                }
+            }
+            for (la in lp.linkAddresses) {
+                val a = la.address
+                if (a is Inet4Address) {
+                    val b = a.address
+                    val guess = "${b[0].toInt() and 255}.${b[1].toInt() and 255}.${b[2].toInt() and 255}.1"
+                    AppLog.i("net", "특정 네트워크 추정 = $guess")
+                    return guess
+                }
+            }
+        } catch (t: Throwable) {
+            AppLog.e("net", "특정 네트워크 IP 탐지 실패", t)
+        }
+        return serverHost(ctx)
+    }
+
     fun serverHost(ctx: Context): String {
         try {
             val cm = ctx.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -19,7 +47,6 @@ object NetUtil {
                 if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
                 val lp = cm.getLinkProperties(n) ?: continue
 
-                // 1순위: 기본 라우트의 게이트웨이
                 for (r in lp.routes) {
                     val g = r.gateway
                     if (r.isDefaultRoute && g is Inet4Address && !g.isAnyLocalAddress) {
@@ -27,7 +54,6 @@ object NetUtil {
                         return g.hostAddress!!
                     }
                 }
-                // 2순위: 내 IP 대역의 .1
                 for (la in lp.linkAddresses) {
                     val a = la.address
                     if (a is Inet4Address) {
@@ -46,8 +72,7 @@ object NetUtil {
             @Suppress("DEPRECATION")
             val g = wm.dhcpInfo.gateway
             if (g != 0) return "${g and 255}.${(g shr 8) and 255}.${(g shr 16) and 255}.${(g shr 24) and 255}"
-        } catch (_: Throwable) {
-        }
+        } catch (_: Throwable) {}
         AppLog.i("net", "탐지 실패, 기본값 $FALLBACK 사용")
         return FALLBACK
     }
