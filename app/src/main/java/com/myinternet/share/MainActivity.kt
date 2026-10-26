@@ -107,7 +107,7 @@ class MainActivity : Activity() {
         label("클라이언트 (유심 없는 폰)")
         hostEt = EditText(this).apply {
             hint = "서버 IP"
-            setText(gateway())
+            setText(NetUtil.serverHost(this))
         }
         root.addView(hostEt)
         btn("연결") {
@@ -130,6 +130,7 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
+        if (::hostEt.isInitialized && (hostEt.text.isNullOrBlank() || hostEt.text.toString() == NetUtil.FALLBACK)) hostEt.setText(NetUtil.serverHost(this))
         refresh()
     }
 
