@@ -19,8 +19,8 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.widget.*
-import com.journeyapps.barcodescanner.ScanContract
-import com.journeyapps.barcodescanner.ScanOptions
+import com.google.zxing.integration.android.IntentIntegrator
+import com.google.zxing.integration.android.IntentResult
 
 class MainActivity : Activity() {
     private lateinit var hostEt: EditText
@@ -124,22 +124,13 @@ class MainActivity : Activity() {
         refresh()
     }
 
-    // 레거시 startActivityForResult 로 QR 스캔 (테마 충돌 회피)
     private fun startQrScanLegacy() {
-        val options = ScanOptions()
-        options.setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-        options.setPrompt("서버 폰의 Wi-Fi QR 코드를 스캔하세요")
-        options.setBeepEnabled(false)
-        options.setOrientationLocked(false)
-        // ScanContract 대신 IntentIntegrator 스타일로 실행
-        val intent = com.journeyapps.barcodescanner.ScanIntentIntegrator(this).apply {
-            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
-            setPrompt("서버 폰의 Wi-Fi QR 코드를 스캔하세요")
-            setBeepEnabled(false)
-            setOrientationLocked(false)
-        }.createScanIntent()
-        @Suppress("DEPRECATION")
-        startActivityForResult(intent, 200)
+        val integrator = IntentIntegrator(this)
+        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+        integrator.setPrompt("서버 폰의 Wi-Fi QR 코드를 스캔하세요")
+        integrator.setBeepEnabled(false)
+        integrator.setOrientationLocked(false)
+        integrator.initiateScan()
     }
 
     private fun handleWifiQr(qrText: String) {
@@ -255,15 +246,18 @@ class MainActivity : Activity() {
 
     @Deprecated("Deprecated in Java")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
-        super.onActivityResult(requestCode, resultCode, data)
-        if (requestCode == 100) {
+        val result: IntentResult? = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
+        if (result != null) {
+            if (result.contents == null) {
+                updateStatus("스캔 취소", "QR 스캔이 취소되었습니다.", Color.GRAY)
+            } else {
+                handleWifiQr(result.contents)
+            }
+        } else if (requestCode == 100) {
             if (resultCode == Activity.RESULT_OK) startVpn(pendingHost)
             else updateStatus("권한 거부", "VPN 필요", Color.RED)
-        } else if (requestCode == 200) {
-            if (resultCode == Activity.RESULT_OK) {
-                val contents = data?.getStringExtra("SCAN_RESULT")
-                if (contents != null) handleWifiQr(contents)
-            }
+        } else {
+            super.onActivityResult(requestCode, resultCode, data)
         }
     }
 
