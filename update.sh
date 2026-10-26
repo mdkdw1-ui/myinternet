@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
 # =========================================================
-# MyInternet UI 고도화 + 자동화 + QR 스캔 + 아이콘 적용
-# Termux 실행용 통합 스크립트
+# MyInternet UI 고도화 + 자동화 + QR 스캔 + 아이콘 적용 (수정본)
+# - MainActivity: AppCompatActivity 상속으로 registerForActivityResult 오류 해결
 # =========================================================
 
 GREEN='\033[0;32m'
@@ -12,7 +12,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 echo -e "${BLUE}===========================================${NC}"
-echo -e "${BLUE} MyInternet 업데이트 시작${NC}"
+echo -e "${BLUE} MyInternet 업데이트 시작 (수정본)${NC}"
 echo -e "${BLUE}===========================================${NC}"
 
 # ---------------------------------------------------------
@@ -47,20 +47,28 @@ fi
 cat << 'EOF' > app/src/main/res/values/themes.xml
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.MyInternet" parent="android:Theme.Material.Light.NoActionBar">
-        <item name="android:colorPrimary">#1565C0</item>
-        <item name="android:colorPrimaryDark">#0D47A1</item>
-        <item name="android:colorAccent">#42A5F5</item>
+    <style name="Theme.MyInternet" parent="Theme.AppCompat.Light.NoActionBar">
+        <item name="colorPrimary">#1565C0</item>
+        <item name="colorPrimaryDark">#0D47A1</item>
+        <item name="colorAccent">#42A5F5</item>
         <item name="android:windowBackground">#F5F7FA</item>
     </style>
 </resources>
 EOF
-echo -e "${GREEN}[OK] themes.xml 생성${NC}"
+echo -e "${GREEN}[OK] themes.xml 생성 (AppCompat 테마)${NC}"
 
 # ---------------------------------------------------------
-# 4. build.gradle.kts - QR 스캔 라이브러리 추가
+# 4. build.gradle.kts - appcompat + QR 스캔 라이브러리 추가
 # ---------------------------------------------------------
-# zxing-android-embedded 의존성 보장
+# appcompat 추가 (없으면)
+if ! grep -q "androidx.appcompat:appcompat" app/build.gradle.kts; then
+    sed -i 's|dependencies {|dependencies {\n    implementation("androidx.appcompat:appcompat:1.7.0")|' app/build.gradle.kts
+    echo -e "${GREEN}[OK] appcompat 의존성 추가${NC}"
+else
+    echo -e "${GREEN}[OK] appcompat 이미 존재${NC}"
+fi
+
+# zxing-android-embedded 추가 (없으면)
 if ! grep -q "zxing-android-embedded" app/build.gradle.kts; then
     sed -i 's|implementation("com.google.zxing:core:3.5.3")|implementation("com.google.zxing:core:3.5.3")\n    implementation("com.journeyapps:zxing-android-embedded:4.3.0")|' app/build.gradle.kts
     echo -e "${GREEN}[OK] zxing-android-embedded 의존성 추가${NC}"
@@ -69,7 +77,7 @@ else
 fi
 
 # ---------------------------------------------------------
-# 5. AndroidManifest.xml (카메라 권한 + QrScanActivity 등록)
+# 5. AndroidManifest.xml (카메라 권한 + 테마 + 아이콘)
 # ---------------------------------------------------------
 cat << 'EOF' > app/src/main/AndroidManifest.xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -129,7 +137,7 @@ EOF
 echo -e "${GREEN}[OK] AndroidManifest.xml 갱신${NC}"
 
 # ---------------------------------------------------------
-# 6. MainActivity.kt (프리미엄 UI + QR 스캔 + 자동 연결)
+# 6. MainActivity.kt (AppCompatActivity 상속 + QR 스캔 + 자동 연결)
 # ---------------------------------------------------------
 cat << 'EOF' > app/src/main/java/com/myinternet/share/MainActivity.kt
 package com.myinternet.share
@@ -153,10 +161,11 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
     private lateinit var hostEt: EditText
     private lateinit var statusTitle: TextView
     private lateinit var statusDesc: TextView
@@ -166,6 +175,7 @@ class MainActivity : Activity() {
     private lateinit var qrView: ImageView
     private var lastQr = ""
     private var isClientMode = false
+    private var pendingHost: String = ""
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -324,7 +334,15 @@ class MainActivity : Activity() {
     private fun handleWifiQr(qrText: String) {
         try {
             if (!qrText.startsWith("WIFI:")) {
-                updateStatus("QR 오류", "Wi-Fi QR 코드가 아닙니다.", Color.RED)
+                // Wi-Fi QR이 아니면 IP 직접 입력으로 간주 (PC 서버 QR 대비)
+                val host = qrText.trim()
+                if (host.matches(Regex("^[0-9.]+(:[0-9]+)?$"))) {
+                    hostEt.setText(host.substringBefore(":"))
+                    updateStatus("IP 인식", "서버 $host 로 연결합니다.", Color.parseColor("#F57C00"))
+                    requestVpnPermissionAndStart(host.substringBefore(":"))
+                    return
+                }
+                updateStatus("QR 오류", "Wi-Fi 또는 IP QR 코드가 아닙니다.", Color.RED)
                 return
             }
             val ssid = Regex("S:([^;]+)").find(qrText)?.groupValues?.get(1)?.replace("\\\\", "\\") ?: return
@@ -358,7 +376,6 @@ class MainActivity : Activity() {
                     override fun onAvailable(network: android.net.Network) {
                         runOnUiThread {
                             updateStatus("Wi-Fi 연결됨", "서버 IP 확인 중...", Color.parseColor("#2E7D32"))
-                            // 약간 대기 후 게이트웨이 IP 추출
                             statusDesc.postDelayed({
                                 val host = NetUtil.serverHost(this@MainActivity)
                                 hostEt.setText(host)
@@ -377,7 +394,6 @@ class MainActivity : Activity() {
                 }
                 cm.requestNetwork(request, wifiCallback!!)
             } else {
-                // Android 9 이하: 시스템 Wi-Fi 설정 화면으로 유도
                 updateStatus("수동 연결 필요", "설정에서 '$ssid' 에 연결 후 다시 시도하세요.", Color.parseColor("#F57C00"))
                 startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
             }
@@ -439,15 +455,13 @@ class MainActivity : Activity() {
     private fun requestVpnPermissionAndStart(host: String) {
         val prep = VpnService.prepare(this)
         if (prep != null) {
-            // 결과는 onActivityResult(100) 에서 처리
             pendingHost = host
+            @Suppress("DEPRECATION")
             startActivityForResult(prep, 100)
         } else {
             startVpn(host)
         }
     }
-
-    private var pendingHost: String = ""
 
     private fun startVpn(host: String) {
         try {
@@ -488,7 +502,7 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 100) {
-            if (resultCode == RESULT_OK) {
+            if (resultCode == Activity.RESULT_OK) {
                 startVpn(pendingHost)
             } else {
                 updateStatus("권한 거부", "VPN 권한이 필요합니다.", Color.RED)
@@ -526,14 +540,14 @@ class MainActivity : Activity() {
     }
 }
 EOF
-echo -e "${GREEN}[OK] MainActivity.kt 갱신${NC}"
+echo -e "${GREEN}[OK] MainActivity.kt 갱신 (AppCompatActivity)${NC}"
 
 # ---------------------------------------------------------
 # 7. Git 커밋 & 푸시 (자동 빌드 트리거)
 # ---------------------------------------------------------
 echo -e "${BLUE}--- Git 변경사항 커밋 및 푸시 ---${NC}"
 git add .
-git commit -m "feat: premium UI + one-tap automation + QR scan auto-connect + app icon"
+git commit -m "fix: use AppCompatActivity for registerForActivityResult + appcompat dependency"
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo -e "${BLUE}현재 브랜치: $CURRENT_BRANCH${NC}"

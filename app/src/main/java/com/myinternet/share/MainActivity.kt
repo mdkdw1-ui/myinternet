@@ -19,10 +19,11 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.View
 import android.widget.*
+import androidx.appcompat.app.AppCompatActivity
 import com.journeyapps.barcodescanner.ScanContract
 import com.journeyapps.barcodescanner.ScanOptions
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
     private lateinit var hostEt: EditText
     private lateinit var statusTitle: TextView
     private lateinit var statusDesc: TextView
@@ -32,6 +33,7 @@ class MainActivity : Activity() {
     private lateinit var qrView: ImageView
     private var lastQr = ""
     private var isClientMode = false
+    private var pendingHost: String = ""
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 
     private val scanLauncher = registerForActivityResult(ScanContract()) { result ->
@@ -190,7 +192,15 @@ class MainActivity : Activity() {
     private fun handleWifiQr(qrText: String) {
         try {
             if (!qrText.startsWith("WIFI:")) {
-                updateStatus("QR 오류", "Wi-Fi QR 코드가 아닙니다.", Color.RED)
+                // Wi-Fi QR이 아니면 IP 직접 입력으로 간주 (PC 서버 QR 대비)
+                val host = qrText.trim()
+                if (host.matches(Regex("^[0-9.]+(:[0-9]+)?$"))) {
+                    hostEt.setText(host.substringBefore(":"))
+                    updateStatus("IP 인식", "서버 $host 로 연결합니다.", Color.parseColor("#F57C00"))
+                    requestVpnPermissionAndStart(host.substringBefore(":"))
+                    return
+                }
+                updateStatus("QR 오류", "Wi-Fi 또는 IP QR 코드가 아닙니다.", Color.RED)
                 return
             }
             val ssid = Regex("S:([^;]+)").find(qrText)?.groupValues?.get(1)?.replace("\\\\", "\\") ?: return
@@ -224,7 +234,6 @@ class MainActivity : Activity() {
                     override fun onAvailable(network: android.net.Network) {
                         runOnUiThread {
                             updateStatus("Wi-Fi 연결됨", "서버 IP 확인 중...", Color.parseColor("#2E7D32"))
-                            // 약간 대기 후 게이트웨이 IP 추출
                             statusDesc.postDelayed({
                                 val host = NetUtil.serverHost(this@MainActivity)
                                 hostEt.setText(host)
@@ -243,7 +252,6 @@ class MainActivity : Activity() {
                 }
                 cm.requestNetwork(request, wifiCallback!!)
             } else {
-                // Android 9 이하: 시스템 Wi-Fi 설정 화면으로 유도
                 updateStatus("수동 연결 필요", "설정에서 '$ssid' 에 연결 후 다시 시도하세요.", Color.parseColor("#F57C00"))
                 startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
             }
@@ -305,15 +313,13 @@ class MainActivity : Activity() {
     private fun requestVpnPermissionAndStart(host: String) {
         val prep = VpnService.prepare(this)
         if (prep != null) {
-            // 결과는 onActivityResult(100) 에서 처리
             pendingHost = host
+            @Suppress("DEPRECATION")
             startActivityForResult(prep, 100)
         } else {
             startVpn(host)
         }
     }
-
-    private var pendingHost: String = ""
 
     private fun startVpn(host: String) {
         try {
@@ -354,7 +360,7 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 100) {
-            if (resultCode == RESULT_OK) {
+            if (resultCode == Activity.RESULT_OK) {
                 startVpn(pendingHost)
             } else {
                 updateStatus("권한 거부", "VPN 권한이 필요합니다.", Color.RED)
