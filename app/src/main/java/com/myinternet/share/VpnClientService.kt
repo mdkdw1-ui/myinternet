@@ -1,6 +1,8 @@
 package com.myinternet.share
 
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
 import android.net.VpnService
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -23,6 +25,21 @@ class VpnClientService : VpnService() {
             return START_NOT_STICKY
         }
         val host = intent?.getStringExtra("host") ?: return START_NOT_STICKY
+        
+        // ★★★ VPN 프로세스도 Wi-Fi 네트워크를 쓰도록 바인딩 (핵심 수정) ★★★
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = intent.getParcelableExtra<Network>("network")
+            if (network != null) {
+                try {
+                    val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                    cm.bindProcessToNetwork(network)
+                    AppLog.i("vpn", "VPN 프로세스가 Wi-Fi 네트워크에 바인딩됨: $network")
+                } catch (t: Throwable) {
+                    AppLog.e("vpn", "VPN 프로세스 네트워크 바인딩 실패", t)
+                }
+            }
+        }
+
         startTunnel(host)
         return START_NOT_STICKY
     }

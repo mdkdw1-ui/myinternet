@@ -33,6 +33,7 @@ class MainActivity : Activity() {
     private var lastQr = ""
     private var isClientMode = false
     private var pendingHost = ""
+    private var pendingNetwork: android.net.Network? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -166,21 +167,18 @@ class MainActivity : Activity() {
                     override fun onAvailable(network: android.net.Network) {
                         runOnUiThread {
                             AppLog.i("ui", "onAvailable network=$network")
+                            pendingNetwork = network
                             updateStatus("Wi-Fi 연결됨", "IP 확인 중...", Color.parseColor("#2E7D32"))
                             statusDesc.postDelayed({
-                                // ★★ 핵심: 스펙파이어 네트워크에서 직접 IP를 얻는다
                                 val host = NetUtil.serverHostFromNetwork(this@MainActivity, network)
                                 hostEt.setText(host)
                                 AppLog.i("ui", "QR 자동 IP = $host")
-
-                                // ★★ 그 네트워크를 앱 기본으로 바인딩
                                 try {
                                     cm.bindProcessToNetwork(network)
-                                    AppLog.i("ui", "bindProcessToNetwork OK")
+                                    AppLog.i("ui", "MainActivity bindProcessToNetwork OK")
                                 } catch (t: Throwable) {
                                     AppLog.e("ui", "bindProcessToNetwork 실패", t)
                                 }
-
                                 updateStatus("VPN 연결 중...", "서버 $host", Color.parseColor("#F57C00"))
                                 requestVpnPermissionAndStart(host)
                             }, 1200)
@@ -227,6 +225,7 @@ class MainActivity : Activity() {
             hostEt.visibility = View.VISIBLE
             val host = hostEt.text.toString().trim()
             if (host.isEmpty()) { Toast.makeText(this, "IP 입력 필요", Toast.LENGTH_SHORT).show(); return }
+            pendingNetwork = null
             requestVpnPermissionAndStart(host)
         }
         refresh()
@@ -240,7 +239,9 @@ class MainActivity : Activity() {
 
     private fun startVpn(host: String) {
         try {
-            startService(Intent(this, VpnClientService::class.java).putExtra("host", host))
+            val intent = Intent(this, VpnClientService::class.java).putExtra("host", host)
+            pendingNetwork?.let { intent.putExtra("network", it) }
+            startService(intent)
             isClientMode = true; updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
         } catch (t: Throwable) { updateStatus("오류", t.message ?: "VPN 실패", Color.RED) }
     }
