@@ -38,7 +38,7 @@ class VpnClientService : VpnService() {
                 .setMtu(1500)
                 .addAddress("198.18.0.1", 32)
                 .addRoute("0.0.0.0", 0)
-                .addDnsServer("8.8.8.8")
+                .addDnsServer("198.18.0.2")
                 .addDisallowedApplication(packageName)
                 .establish()
             if (fd == null) {
@@ -70,9 +70,16 @@ class VpnClientService : VpnService() {
                   address: $host
                   port: ${ServerService.PORT}
                   udp: 'udp'
+                  pipeline: true
+                mapdns:
+                  address: 198.18.0.2
+                  port: 53
+                  network: 100.64.0.0
+                  netmask: 255.192.0.0
+                  cache-size: 10000
                 misc:
                   log-file: ${logFile.absolutePath}
-                  log-level: debug
+                  log-level: warn
                 """.trimIndent() + "\n"
             )
             AppLog.i("vpn", "hev 설정:\n" + cfg.readText())

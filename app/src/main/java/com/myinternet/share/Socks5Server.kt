@@ -6,6 +6,7 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -88,27 +89,49 @@ class Socks5Server(private val port: Int) {
         o.flush()
     }
 
+    // 도메인/IP 문자열 -> 주소 목록 (IPv4 먼저)
+    private fun resolve(host: String): List<InetAddress> =
+        InetAddress.getAllByName(host).sortedBy { if (it is Inet4Address) 0 else 1 }
+
     private fun tcpConnect(c: Socket, i: InputStream, o: OutputStream, host: String, dport: Int) {
-        AppLog.i("srv", "CONNECT ${c.inetAddress.hostAddress} -> $host:$dport")
-        val r = Socket()
-        try {
-            r.connect(InetSocketAddress(host, dport), 10000)
-            r.tcpNoDelay = true
-        } catch (e: Exception) {
-            AppLog.e("srv", "CONNECT 실패 $host:$dport ${e.javaClass.simpleName} ${e.message}")
-            try { r.close() } catch (_: Exception) {}
+        // mapdns 주소(198.18.*)로 오는 DoT 등은 바로 거절 (타임아웃 대기 방지)
+        if (host.startsWith("198.18.")) {
             reply(o, 5)
             return
         }
+        var r: Socket? = null
+        var err: Exception? = null
+        try {
+            for (a in resolve(host).take(3)) {
+                val s = Socket()
+                try {
+                    s.connect(InetSocketAddress(a, dport), if (a is Inet4Address) 7000 else 3000)
+                    r = s
+                    break
+                } catch (e: Exception) {
+                    err = e
+                    try { s.close() } catch (_: Exception) {}
+                }
+            }
+        } catch (e: Exception) {
+            err = e
+        }
+        val rs = r
+        if (rs == null) {
+            AppLog.e("srv", "CONNECT 실패 $host:$dport ${err?.javaClass?.simpleName} ${err?.message}")
+            reply(o, 5)
+            return
+        }
+        rs.tcpNoDelay = true
         reply(o, 0)
         val t = thread(isDaemon = true) {
-            try { r.getInputStream().copyTo(o, 65536) } catch (_: Exception) {}
+            try { rs.getInputStream().copyTo(o, 65536) } catch (_: Exception) {}
             try { c.shutdownOutput() } catch (_: Exception) {}
         }
-        try { i.copyTo(r.getOutputStream(), 65536) } catch (_: Exception) {}
-        try { r.shutdownOutput() } catch (_: Exception) {}
+        try { i.copyTo(rs.getOutputStream(), 65536) } catch (_: Exception) {}
+        try { rs.shutdownOutput() } catch (_: Exception) {}
         t.join(3000)
-        try { r.close() } catch (_: Exception) {}
+        try { rs.close() } catch (_: Exception) {}
     }
 
     private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, InetAddress>()
@@ -155,7 +178,12 @@ class Socks5Server(private val port: Int) {
                                 val l = buf[idx++].toInt() and 255
                                 val h = String(buf, idx, l)
                                 idx += l
-                                dnsCache.getOrPut(h) { InetAddress.getByName(h) }
+                                try {
+                                    dnsCache.getOrPut(h) { resolve(h).first() }
+                                } catch (e: Exception) {
+                                    // 해석 실패한 패킷만 버리고 릴레이는 계속 유지
+                                    continue
+                                }
                             }
                             else -> continue
                         }
