@@ -1,8 +1,8 @@
 #!/data/data/com.termux/files/usr/bin/bash
 
 # =========================================================
-# MyInternet UI 고도화 + 자동화 + QR 스캔 + 아이콘 적용 (수정본)
-# - MainActivity: AppCompatActivity 상속으로 registerForActivityResult 오류 해결
+# MyInternet UI 고도화 + 자동화 + QR 스캔 + 아이콘 적용 (수정본 2)
+# - android.useAndroidX=true 추가 (appcompat 오류 해결)
 # =========================================================
 
 GREEN='\033[0;32m'
@@ -12,7 +12,7 @@ YELLOW='\033[0;33m'
 NC='\033[0m'
 
 echo -e "${BLUE}===========================================${NC}"
-echo -e "${BLUE} MyInternet 업데이트 시작 (수정본)${NC}"
+echo -e "${BLUE} MyInternet 업데이트 시작 (수정본 2)${NC}"
 echo -e "${BLUE}===========================================${NC}"
 
 # ---------------------------------------------------------
@@ -32,7 +32,19 @@ mkdir -p app/src/main/res/mipmap-anydpi-v26
 mkdir -p app/src/main/java/com/myinternet/share
 
 # ---------------------------------------------------------
-# 2. 앱 아이콘 복사 (icon.png 가 있으면)
+# 2. gradle.properties - AndroidX 활성화 (필수)
+# ---------------------------------------------------------
+if ! grep -q "android.useAndroidX=true" gradle.properties; then
+    echo "" >> gradle.properties
+    echo "android.useAndroidX=true" >> gradle.properties
+    echo "android.enableJetifier=true" >> gradle.properties
+    echo -e "${GREEN}[OK] gradle.properties 에 useAndroidX=true 추가${NC}"
+else
+    echo -e "${GREEN}[OK] useAndroidX 이미 활성화됨${NC}"
+fi
+
+# ---------------------------------------------------------
+# 3. 앱 아이콘 복사 (icon.png 가 있으면)
 # ---------------------------------------------------------
 if [ -f "icon.png" ]; then
     cp icon.png app/src/main/res/drawable/app_icon.png
@@ -42,7 +54,7 @@ else
 fi
 
 # ---------------------------------------------------------
-# 3. 테마 추가
+# 4. 테마 추가
 # ---------------------------------------------------------
 cat << 'EOF' > app/src/main/res/values/themes.xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -58,9 +70,8 @@ EOF
 echo -e "${GREEN}[OK] themes.xml 생성 (AppCompat 테마)${NC}"
 
 # ---------------------------------------------------------
-# 4. build.gradle.kts - appcompat + QR 스캔 라이브러리 추가
+# 5. build.gradle.kts - appcompat + QR 스캔 라이브러리 추가
 # ---------------------------------------------------------
-# appcompat 추가 (없으면)
 if ! grep -q "androidx.appcompat:appcompat" app/build.gradle.kts; then
     sed -i 's|dependencies {|dependencies {\n    implementation("androidx.appcompat:appcompat:1.7.0")|' app/build.gradle.kts
     echo -e "${GREEN}[OK] appcompat 의존성 추가${NC}"
@@ -68,7 +79,6 @@ else
     echo -e "${GREEN}[OK] appcompat 이미 존재${NC}"
 fi
 
-# zxing-android-embedded 추가 (없으면)
 if ! grep -q "zxing-android-embedded" app/build.gradle.kts; then
     sed -i 's|implementation("com.google.zxing:core:3.5.3")|implementation("com.google.zxing:core:3.5.3")\n    implementation("com.journeyapps:zxing-android-embedded:4.3.0")|' app/build.gradle.kts
     echo -e "${GREEN}[OK] zxing-android-embedded 의존성 추가${NC}"
@@ -77,7 +87,7 @@ else
 fi
 
 # ---------------------------------------------------------
-# 5. AndroidManifest.xml (카메라 권한 + 테마 + 아이콘)
+# 6. AndroidManifest.xml (카메라 권한 + 테마 + 아이콘)
 # ---------------------------------------------------------
 cat << 'EOF' > app/src/main/AndroidManifest.xml
 <?xml version="1.0" encoding="utf-8"?>
@@ -137,7 +147,7 @@ EOF
 echo -e "${GREEN}[OK] AndroidManifest.xml 갱신${NC}"
 
 # ---------------------------------------------------------
-# 6. MainActivity.kt (AppCompatActivity 상속 + QR 스캔 + 자동 연결)
+# 7. MainActivity.kt (AppCompatActivity 상속 + QR 스캔 + 자동 연결)
 # ---------------------------------------------------------
 cat << 'EOF' > app/src/main/java/com/myinternet/share/MainActivity.kt
 package com.myinternet.share
@@ -334,7 +344,6 @@ class MainActivity : AppCompatActivity() {
     private fun handleWifiQr(qrText: String) {
         try {
             if (!qrText.startsWith("WIFI:")) {
-                // Wi-Fi QR이 아니면 IP 직접 입력으로 간주 (PC 서버 QR 대비)
                 val host = qrText.trim()
                 if (host.matches(Regex("^[0-9.]+(:[0-9]+)?$"))) {
                     hostEt.setText(host.substringBefore(":"))
@@ -543,11 +552,11 @@ EOF
 echo -e "${GREEN}[OK] MainActivity.kt 갱신 (AppCompatActivity)${NC}"
 
 # ---------------------------------------------------------
-# 7. Git 커밋 & 푸시 (자동 빌드 트리거)
+# 8. Git 커밋 & 푸시 (자동 빌드 트리거)
 # ---------------------------------------------------------
 echo -e "${BLUE}--- Git 변경사항 커밋 및 푸시 ---${NC}"
 git add .
-git commit -m "fix: use AppCompatActivity for registerForActivityResult + appcompat dependency"
+git commit -m "fix: enable AndroidX + use AppCompatActivity for registerForActivityResult"
 
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
 echo -e "${BLUE}현재 브랜치: $CURRENT_BRANCH${NC}"

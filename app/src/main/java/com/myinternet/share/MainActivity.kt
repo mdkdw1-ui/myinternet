@@ -192,7 +192,6 @@ class MainActivity : AppCompatActivity() {
     private fun handleWifiQr(qrText: String) {
         try {
             if (!qrText.startsWith("WIFI:")) {
-                // Wi-Fi QR이 아니면 IP 직접 입력으로 간주 (PC 서버 QR 대비)
                 val host = qrText.trim()
                 if (host.matches(Regex("^[0-9.]+(:[0-9]+)?$"))) {
                     hostEt.setText(host.substringBefore(":"))
