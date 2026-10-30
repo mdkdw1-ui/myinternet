@@ -31,6 +31,7 @@ class MainActivity : Activity() {
     private lateinit var statusDesc: TextView
     private lateinit var btnServer: Button
     private lateinit var btnClient: Button
+    private lateinit var btnDisconnect: Button // ★ 명확한 해제 버튼 추가
     private lateinit var btnScan: Button
     private lateinit var qrView: ImageView
     private lateinit var statsText: TextView
@@ -71,37 +72,36 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
             setBackgroundColor(Color.parseColor("#F5F7FA"))
         }
+        
+        // 타이틀
         root.addView(TextView(this).apply {
             text = "MyInternet"; textSize = 28f; setTextColor(Color.parseColor("#0D47A1"))
-            // ★ 수정된 부분: setTypeface(null, Typeface.BOLD) 형태로 변경
             setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
         })
 
+        // 상태 카드
         val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
             setPadding(pad, pad, pad, pad); setElevation(10f)
         }
         statusTitle = TextView(this).apply {
-            text = "대기 중"; textSize = 20f
-            // ★ 수정된 부분
-            setTypeface(null, Typeface.BOLD)
+            text = "대기 중"; textSize = 20f; setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#333333")); gravity = Gravity.CENTER
         }
         statusDesc = TextView(this).apply {
             text = "아래 버튼을 눌러 시작하세요"; textSize = 14f
             setTextColor(Color.parseColor("#666666")); gravity = Gravity.CENTER; setPadding(0, 8, 0, 0)
         }
-        
         statsText = TextView(this).apply {
             text = "속도: - | 데이터: -"; textSize = 13f
             setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER; setPadding(0, 12, 0, 0)
-            // ★ 수정된 부분
             setTypeface(Typeface.MONOSPACE)
         }
         
         statusCard.addView(statusTitle); statusCard.addView(statusDesc); statusCard.addView(statsText)
         root.addView(statusCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, pad, 0, pad) })
 
+        // 서버/클라 시작 버튼
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnServer = Button(this).apply {
             text = "서버 시작\n(데이터 폰)"; textSize = 16f; setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE)
@@ -115,12 +115,14 @@ class MainActivity : Activity() {
         btnRow.addView(btnClient, LinearLayout.LayoutParams(0, (80 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(8, 0, 8, 0) })
         root.addView(btnRow)
 
+        // QR 스캔 버튼
         btnScan = Button(this).apply {
             text = "QR 코드 스캔하여 자동 연결"; textSize = 16f; setBackgroundColor(Color.parseColor("#F57C00")); setTextColor(Color.WHITE)
             setOnClickListener { startQrScanLegacy() }
         }
         root.addView(btnScan, LinearLayout.LayoutParams(-1, (60 * resources.displayMetrics.density).toInt()).apply { setMargins(8, pad, 8, 0) })
 
+        // IP 입력창
         hostEt = EditText(this).apply {
             hint = "서버 IP 주소"; inputType = InputType.TYPE_CLASS_TEXT
             setText(NetUtil.serverHost(this@MainActivity)); visibility = View.GONE
@@ -128,11 +130,29 @@ class MainActivity : Activity() {
         }
         root.addView(hostEt)
 
+        // QR 이미지 뷰
         qrView = ImageView(this).apply { visibility = View.GONE; scaleType = ImageView.ScaleType.FIT_CENTER }
         root.addView(qrView, LinearLayout.LayoutParams((200 * resources.displayMetrics.density).toInt(), (200 * resources.displayMetrics.density).toInt()).apply { gravity = Gravity.CENTER; setMargins(0, pad, 0, pad) })
 
+        // ★ 빨간색 [연결 해제] 버튼 (항상 보임)
+        btnDisconnect = Button(this).apply {
+            text = "클라이언트 연결 해제 (OFF)"
+            textSize = 16f
+            setBackgroundColor(Color.parseColor("#D32F2F")) // 빨간색
+            setTextColor(Color.WHITE)
+            setOnClickListener { 
+                if (isClientMode) {
+                    stopClientSafely()
+                } else {
+                    Toast.makeText(context, "현재 연결된 VPN이 없습니다.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        root.addView(btnDisconnect, LinearLayout.LayoutParams(-1, (60 * resources.displayMetrics.density).toInt()).apply { setMargins(8, pad, 8, 0) })
+
         root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) })
 
+        // 하단 유틸리티
         val utilRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         fun utilBtn(t: String, f: () -> Unit) = Button(this).apply {
             text = t; textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0")); setOnClickListener { f() }
@@ -290,9 +310,13 @@ class MainActivity : Activity() {
         refresh()
     }
 
+    // ★ 안전한 클라이언트 종료
     private fun stopClientSafely() {
         try {
+            // 1. 서비스 종료 명령
             startService(Intent(this, VpnClientService::class.java).setAction("stop"))
+            
+            // 2. 네트워크 바인딩 해제 (다른 와이파이 사용 가능하게)
             try {
                 val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
                 cm.bindProcessToNetwork(null)
@@ -300,6 +324,8 @@ class MainActivity : Activity() {
             } catch (t: Throwable) {
                 AppLog.e("ui", "네트워크 바인딩 해제 실패", t)
             }
+            
+            // 3. 와이파이 콜백 해제
             wifiCallback?.let {
                 try {
                     val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -309,8 +335,12 @@ class MainActivity : Activity() {
             }
             wifiCallback = null
             pendingNetwork = null
+            
+            // 4. UI 상태 변경
             isClientMode = false
             updateStatus("대기 중", "VPN 연결 해제됨", Color.parseColor("#333333"))
+            refresh()
+            Toast.makeText(this, "VPN 연결이 안전하게 해제되었습니다.", Toast.LENGTH_SHORT).show()
         } catch (t: Throwable) {
             AppLog.e("ui", "종료 중 오류", t)
         }
@@ -330,6 +360,7 @@ class MainActivity : Activity() {
             isClientMode = true
             lastTx = 0; lastRx = 0
             updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
+            refresh()
         } catch (t: Throwable) { updateStatus("오류", t.message ?: "VPN 실패", Color.RED) }
     }
 
@@ -379,9 +410,13 @@ class MainActivity : Activity() {
             btnServer.text = "서버 시작\n(데이터 폰)"; btnServer.setBackgroundColor(Color.parseColor("#1565C0"))
         }
         if (isClientMode) {
-            btnClient.text = "연결 해제"; btnClient.setBackgroundColor(Color.parseColor("#C62828"))
+            btnClient.text = "수동 연결\n(연결됨)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
+            btnClient.isEnabled = false // 이미 연결됐으니 비활성화
+            btnDisconnect.isEnabled = true // 해제 버튼 활성화
         } else {
             btnClient.text = "수동 연결\n(IP 입력)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
+            btnClient.isEnabled = true
+            btnDisconnect.isEnabled = false // 연결 안 됐을 때 해제 버튼 비활성화
         }
     }
 
