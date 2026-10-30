@@ -33,7 +33,7 @@ class MainActivity : Activity() {
     private lateinit var btnClient: Button
     private lateinit var btnScan: Button
     private lateinit var qrView: ImageView
-    private lateinit var statsText: TextView // ★ 트래픽 표시용
+    private lateinit var statsText: TextView
     
     private var lastQr = ""
     private var isClientMode = false
@@ -73,16 +73,18 @@ class MainActivity : Activity() {
         }
         root.addView(TextView(this).apply {
             text = "MyInternet"; textSize = 28f; setTextColor(Color.parseColor("#0D47A1"))
+            // ★ 수정된 부분: setTypeface(null, Typeface.BOLD) 형태로 변경
             setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
         })
 
-        // 상태 카드
         val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
             setPadding(pad, pad, pad, pad); setElevation(10f)
         }
         statusTitle = TextView(this).apply {
-            text = "대기 중"; textSize = 20f; setTypeface(null, Typeface.BOLD)
+            text = "대기 중"; textSize = 20f
+            // ★ 수정된 부분
+            setTypeface(null, Typeface.BOLD)
             setTextColor(Color.parseColor("#333333")); gravity = Gravity.CENTER
         }
         statusDesc = TextView(this).apply {
@@ -90,17 +92,16 @@ class MainActivity : Activity() {
             setTextColor(Color.parseColor("#666666")); gravity = Gravity.CENTER; setPadding(0, 8, 0, 0)
         }
         
-        // ★ 실시간 트래픽 표시
         statsText = TextView(this).apply {
             text = "속도: - | 데이터: -"; textSize = 13f
             setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER; setPadding(0, 12, 0, 0)
-            setTypeface(null, Typeface.MONOSPACE)
+            // ★ 수정된 부분
+            setTypeface(Typeface.MONOSPACE)
         }
         
         statusCard.addView(statusTitle); statusCard.addView(statusDesc); statusCard.addView(statsText)
         root.addView(statusCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, pad, 0, pad) })
 
-        // 메인 버튼
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnServer = Button(this).apply {
             text = "서버 시작\n(데이터 폰)"; textSize = 16f; setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE)
@@ -145,7 +146,6 @@ class MainActivity : Activity() {
         refresh()
     }
 
-    // ★ 1초마다 트래픽 및 접속자 수 갱신
     private fun startStatsUpdater() {
         uiHandler.postDelayed(object : Runnable {
             override fun run() {
@@ -159,7 +159,6 @@ class MainActivity : Activity() {
                             val dTx = tx - lastTx
                             val dRx = rx - lastRx
                             
-                            // 포맷팅 함수 (B -> KB/MB)
                             fun formatBytes(b: Long): String {
                                 if (b < 1024) return "${b}B"
                                 if (b < 1024 * 1024) return String.format("%.1fKB", b / 1024.0)
@@ -176,7 +175,6 @@ class MainActivity : Activity() {
                             lastRx = rx
                         }
                     } else if (ServerService.running) {
-                        // 서버 모드일 때는 접속자 수 표시 (ServerService에서 가져옴)
                         statsText.text = "접속 중인 클라이언트: ${ServerService.activeClientCount}대"
                     } else {
                         statsText.text = "속도: - | 데이터: -"
@@ -292,11 +290,9 @@ class MainActivity : Activity() {
         refresh()
     }
 
-    // ★ 안전한 클라이언트 종료 (네트워크 꼬임 방지)
     private fun stopClientSafely() {
         try {
             startService(Intent(this, VpnClientService::class.java).setAction("stop"))
-            // ★★ 중요: 묶여있던 와이파이 네트워크 바인딩 해제
             try {
                 val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
                 cm.bindProcessToNetwork(null)
@@ -332,7 +328,7 @@ class MainActivity : Activity() {
             pendingNetwork?.let { intent.putExtra("network", it) }
             startService(intent)
             isClientMode = true
-            lastTx = 0; lastRx = 0 // 통계 초기화
+            lastTx = 0; lastRx = 0
             updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
         } catch (t: Throwable) { updateStatus("오류", t.message ?: "VPN 실패", Color.RED) }
     }
