@@ -12,6 +12,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 class Socks5Server(private val port: Int) {
@@ -20,6 +21,9 @@ class Socks5Server(private val port: Int) {
 
     @Volatile
     private var running = false
+
+    // ★ 접속자 수 카운터 (UI 표시용)
+    val activeConnections = AtomicInteger(0)
 
     fun start() {
         running = true
@@ -49,6 +53,7 @@ class Socks5Server(private val port: Int) {
     }
 
     private fun handle(c: Socket) {
+        activeConnections.incrementAndGet()
         try {
             c.tcpNoDelay = true
             val i = DataInputStream(c.getInputStream())
@@ -80,6 +85,7 @@ class Socks5Server(private val port: Int) {
         } catch (e: Exception) {
             AppLog.e("srv", "세션 예외 ${e.javaClass.simpleName} ${e.message}")
         } finally {
+            activeConnections.decrementAndGet()
             try { c.close() } catch (_: Exception) {}
         }
     }
@@ -89,12 +95,10 @@ class Socks5Server(private val port: Int) {
         o.flush()
     }
 
-    // 도메인/IP 문자열 -> 주소 목록 (IPv4 먼저)
     private fun resolve(host: String): List<InetAddress> =
         InetAddress.getAllByName(host).sortedBy { if (it is Inet4Address) 0 else 1 }
 
     private fun tcpConnect(c: Socket, i: InputStream, o: OutputStream, host: String, dport: Int) {
-        // mapdns 주소(198.18.*)로 오는 DoT 등은 바로 거절 (타임아웃 대기 방지)
         if (host.startsWith("198.18.")) {
             reply(o, 5)
             return
@@ -181,7 +185,6 @@ class Socks5Server(private val port: Int) {
                                 try {
                                     dnsCache.getOrPut(h) { resolve(h).first() }
                                 } catch (e: Exception) {
-                                    // 해석 실패한 패킷만 버리고 릴레이는 계속 유지
                                     continue
                                 }
                             }

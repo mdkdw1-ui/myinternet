@@ -6,14 +6,249 @@ BLUE='\033[0;34m'
 YELLOW='\033[0;33m'
 NC='\033[0m'
 
-echo -e "${BLUE}=== MyInternet 클라이언트 네트워크 바인딩 수정 ===${NC}"
+echo -e "${BLUE}=== MyInternet 업데이트 (트래픽 표시 + 접속자 수 + 안전한 종료) ===${NC}"
 
 if [ ! -f "settings.gradle.kts" ]; then
     echo -e "${RED}[오류] 프로젝트 루트에서 실행하세요.${NC}"
     exit 1
 fi
 
-# 1. MainActivity.kt 수정 (Network 객체 전달)
+# ---------------------------------------------------------
+# 1. Socks5Server.kt 수정 (활성 접속자 수 카운터 추가 - 코어 로직 유지)
+# ---------------------------------------------------------
+cat > app/src/main/java/com/myinternet/share/Socks5Server.kt << 'EOF'
+package com.myinternet.share
+
+import java.io.ByteArrayOutputStream
+import java.io.DataInputStream
+import java.io.InputStream
+import java.io.OutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
+import java.net.Inet4Address
+import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.ServerSocket
+import java.net.Socket
+import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
+import kotlin.concurrent.thread
+
+class Socks5Server(private val port: Int) {
+    private var server: ServerSocket? = null
+    private val pool = Executors.newCachedThreadPool()
+
+    @Volatile
+    private var running = false
+
+    // ★ 접속자 수 카운터 (UI 표시용)
+    val activeConnections = AtomicInteger(0)
+
+    fun start() {
+        running = true
+        val ss = ServerSocket()
+        ss.reuseAddress = true
+        ss.bind(InetSocketAddress(port))
+        server = ss
+        AppLog.i("srv", "SOCKS5 서버 시작 :$port")
+        pool.execute {
+            while (running) {
+                try {
+                    val c = ss.accept()
+                    pool.execute { handle(c) }
+                } catch (e: Exception) {
+                    if (!running) break
+                    AppLog.e("srv", "accept 오류", e)
+                }
+            }
+        }
+    }
+
+    fun stop() {
+        running = false
+        AppLog.i("srv", "SOCKS5 서버 중지")
+        try { server?.close() } catch (_: Exception) {}
+        server = null
+    }
+
+    private fun handle(c: Socket) {
+        activeConnections.incrementAndGet()
+        try {
+            c.tcpNoDelay = true
+            val i = DataInputStream(c.getInputStream())
+            val o = c.getOutputStream()
+
+            if (i.readUnsignedByte() != 5) return
+            val n = i.readUnsignedByte()
+            i.readFully(ByteArray(n))
+            o.write(byteArrayOf(5, 0))
+            o.flush()
+
+            i.readUnsignedByte()
+            val cmd = i.readUnsignedByte()
+            i.readUnsignedByte()
+            val atyp = i.readUnsignedByte()
+            val host: String = when (atyp) {
+                1 -> InetAddress.getByAddress(ByteArray(4).also { i.readFully(it) }).hostAddress!!
+                3 -> String(ByteArray(i.readUnsignedByte()).also { i.readFully(it) })
+                4 -> InetAddress.getByAddress(ByteArray(16).also { i.readFully(it) }).hostAddress!!
+                else -> return
+            }
+            val dport = i.readUnsignedShort()
+
+            when (cmd) {
+                1 -> tcpConnect(c, i, o, host, dport)
+                3 -> udpAssociate(c, i, o)
+                else -> reply(o, 7)
+            }
+        } catch (e: Exception) {
+            AppLog.e("srv", "세션 예외 ${e.javaClass.simpleName} ${e.message}")
+        } finally {
+            activeConnections.decrementAndGet()
+            try { c.close() } catch (_: Exception) {}
+        }
+    }
+
+    private fun reply(o: OutputStream, code: Int) {
+        o.write(byteArrayOf(5, code.toByte(), 0, 1, 0, 0, 0, 0, 0, 0))
+        o.flush()
+    }
+
+    private fun resolve(host: String): List<InetAddress> =
+        InetAddress.getAllByName(host).sortedBy { if (it is Inet4Address) 0 else 1 }
+
+    private fun tcpConnect(c: Socket, i: InputStream, o: OutputStream, host: String, dport: Int) {
+        if (host.startsWith("198.18.")) {
+            reply(o, 5)
+            return
+        }
+        var r: Socket? = null
+        var err: Exception? = null
+        try {
+            for (a in resolve(host).take(3)) {
+                val s = Socket()
+                try {
+                    s.connect(InetSocketAddress(a, dport), if (a is Inet4Address) 7000 else 3000)
+                    r = s
+                    break
+                } catch (e: Exception) {
+                    err = e
+                    try { s.close() } catch (_: Exception) {}
+                }
+            }
+        } catch (e: Exception) {
+            err = e
+        }
+        val rs = r
+        if (rs == null) {
+            AppLog.e("srv", "CONNECT 실패 $host:$dport ${err?.javaClass?.simpleName} ${err?.message}")
+            reply(o, 5)
+            return
+        }
+        rs.tcpNoDelay = true
+        reply(o, 0)
+        val t = thread(isDaemon = true) {
+            try { rs.getInputStream().copyTo(o, 65536) } catch (_: Exception) {}
+            try { c.shutdownOutput() } catch (_: Exception) {}
+        }
+        try { i.copyTo(rs.getOutputStream(), 65536) } catch (_: Exception) {}
+        try { rs.shutdownOutput() } catch (_: Exception) {}
+        t.join(3000)
+        try { rs.close() } catch (_: Exception) {}
+    }
+
+    private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, InetAddress>()
+
+    private fun udpAssociate(c: Socket, i: InputStream, o: OutputStream) {
+        val us = DatagramSocket(0)
+        try { us.receiveBufferSize = 4 shl 20 } catch (_: Exception) {}
+        try { us.sendBufferSize = 4 shl 20 } catch (_: Exception) {}
+        try { us.trafficClass = 0xB8 } catch (_: Exception) {}
+        val bnd = c.localAddress.address
+        val rep = ByteArrayOutputStream()
+        rep.write(byteArrayOf(5, 0, 0, if (bnd.size == 4) 1 else 4))
+        rep.write(bnd)
+        rep.write(us.localPort ushr 8)
+        rep.write(us.localPort and 255)
+        o.write(rep.toByteArray())
+        o.flush()
+
+        val clientAddr: InetAddress = c.inetAddress
+        AppLog.i("srv", "UDP ASSOCIATE ${clientAddr.hostAddress} 중계포트 ${us.localPort}")
+        thread(isDaemon = true) {
+            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
+            val hdr = 22
+            val buf = ByteArray(65535 + hdr)
+            val p = DatagramPacket(buf, hdr, buf.size - hdr)
+            val sp = DatagramPacket(buf, 0)
+            var clientPort = -1
+            var outN = 0L
+            var inN = 0L
+            try {
+                while (true) {
+                    p.setData(buf, hdr, buf.size - hdr)
+                    us.receive(p)
+                    val len = p.length
+                    if (p.address == clientAddr && (clientPort == -1 || p.port == clientPort)) {
+                        clientPort = p.port
+                        if (len < 10 || buf[hdr + 2].toInt() != 0) continue
+                        var idx = hdr + 3
+                        val at = buf[idx++].toInt()
+                        val dst: InetAddress = when (at) {
+                            1 -> { val a = buf.copyOfRange(idx, idx + 4); idx += 4; InetAddress.getByAddress(a) }
+                            4 -> { val a = buf.copyOfRange(idx, idx + 16); idx += 16; InetAddress.getByAddress(a) }
+                            3 -> {
+                                val l = buf[idx++].toInt() and 255
+                                val h = String(buf, idx, l)
+                                idx += l
+                                try {
+                                    dnsCache.getOrPut(h) { resolve(h).first() }
+                                } catch (e: Exception) {
+                                    continue
+                                }
+                            }
+                            else -> continue
+                        }
+                        val dp = ((buf[idx].toInt() and 255) shl 8) or (buf[idx + 1].toInt() and 255)
+                        idx += 2
+                        sp.setData(buf, idx, hdr + len - idx)
+                        sp.address = dst
+                        sp.port = dp
+                        us.send(sp)
+                        outN++
+                        if (outN == 1L) AppLog.i("srv", "UDP 첫 패킷 -> ${dst.hostAddress}:$dp")
+                    } else if (clientPort != -1) {
+                        val a = p.address.address
+                        val hl = 4 + a.size + 2
+                        val st = hdr - hl
+                        buf[st] = 0
+                        buf[st + 1] = 0
+                        buf[st + 2] = 0
+                        buf[st + 3] = (if (a.size == 4) 1 else 4).toByte()
+                        System.arraycopy(a, 0, buf, st + 4, a.size)
+                        buf[st + 4 + a.size] = (p.port ushr 8).toByte()
+                        buf[st + 5 + a.size] = (p.port and 255).toByte()
+                        sp.setData(buf, st, hl + len)
+                        sp.address = clientAddr
+                        sp.port = clientPort
+                        us.send(sp)
+                        inN++
+                    }
+                }
+            } catch (e: Exception) {
+                AppLog.i("srv", "UDP 종료 out=$outN in=$inN (${e.javaClass.simpleName})")
+            }
+        }
+
+        try { while (i.read() >= 0) { } } catch (_: Exception) {}
+        us.close()
+    }
+}
+EOF
+
+# ---------------------------------------------------------
+# 2. MainActivity.kt 수정 (트래픽 표시 + 접속자 수 + 안전한 종료)
+# ---------------------------------------------------------
 cat > app/src/main/java/com/myinternet/share/MainActivity.kt << 'EOF'
 package com.myinternet.share
 
@@ -31,6 +266,8 @@ import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -38,6 +275,7 @@ import android.view.View
 import android.widget.*
 import com.google.zxing.integration.android.IntentIntegrator
 import com.google.zxing.integration.android.IntentResult
+import hev.htproxy.TProxyService
 
 class MainActivity : Activity() {
     private lateinit var hostEt: EditText
@@ -47,16 +285,23 @@ class MainActivity : Activity() {
     private lateinit var btnClient: Button
     private lateinit var btnScan: Button
     private lateinit var qrView: ImageView
+    private lateinit var statsText: TextView // ★ 트래픽 표시용
+    
     private var lastQr = ""
     private var isClientMode = false
     private var pendingHost = ""
     private var pendingNetwork: android.net.Network? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
+    
+    private var lastTx = 0L
+    private var lastRx = 0L
+    private val uiHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNecessaryPermissions()
         buildPremiumUI()
+        startStatsUpdater()
     }
 
     private fun requestNecessaryPermissions() {
@@ -83,6 +328,7 @@ class MainActivity : Activity() {
             setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
         })
 
+        // 상태 카드
         val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
             setPadding(pad, pad, pad, pad); setElevation(10f)
@@ -95,9 +341,18 @@ class MainActivity : Activity() {
             text = "아래 버튼을 눌러 시작하세요"; textSize = 14f
             setTextColor(Color.parseColor("#666666")); gravity = Gravity.CENTER; setPadding(0, 8, 0, 0)
         }
-        statusCard.addView(statusTitle); statusCard.addView(statusDesc)
+        
+        // ★ 실시간 트래픽 표시
+        statsText = TextView(this).apply {
+            text = "속도: - | 데이터: -"; textSize = 13f
+            setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER; setPadding(0, 12, 0, 0)
+            setTypeface(null, Typeface.MONOSPACE)
+        }
+        
+        statusCard.addView(statusTitle); statusCard.addView(statusDesc); statusCard.addView(statsText)
         root.addView(statusCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, pad, 0, pad) })
 
+        // 메인 버튼
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnServer = Button(this).apply {
             text = "서버 시작\n(데이터 폰)"; textSize = 16f; setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE)
@@ -140,6 +395,48 @@ class MainActivity : Activity() {
 
         setContentView(ScrollView(this).apply { addView(root) })
         refresh()
+    }
+
+    // ★ 1초마다 트래픽 및 접속자 수 갱신
+    private fun startStatsUpdater() {
+        uiHandler.postDelayed(object : Runnable {
+            override fun run() {
+                try {
+                    if (isClientMode) {
+                        val stats = TProxyService.TProxyGetStats()
+                        if (stats.size >= 4) {
+                            val tx = stats[1]
+                            val rx = stats[3]
+                            
+                            val dTx = tx - lastTx
+                            val dRx = rx - lastRx
+                            
+                            // 포맷팅 함수 (B -> KB/MB)
+                            fun formatBytes(b: Long): String {
+                                if (b < 1024) return "${b}B"
+                                if (b < 1024 * 1024) return String.format("%.1fKB", b / 1024.0)
+                                return String.format("%.1fMB", b / (1024.0 * 1024.0))
+                            }
+                            
+                            val upSpeed = formatBytes(dTx)
+                            val downSpeed = formatBytes(dRx)
+                            val totalUsed = formatBytes(tx + rx)
+                            
+                            statsText.text = "▼ ${downSpeed}/s  ▲ ${upSpeed}/s  |  누적: ${totalUsed}"
+                            
+                            lastTx = tx
+                            lastRx = rx
+                        }
+                    } else if (ServerService.running) {
+                        // 서버 모드일 때는 접속자 수 표시 (ServerService에서 가져옴)
+                        statsText.text = "접속 중인 클라이언트: ${ServerService.activeClientCount}대"
+                    } else {
+                        statsText.text = "속도: - | 데이터: -"
+                    }
+                } catch (_: Throwable) {}
+                uiHandler.postDelayed(this, 1000)
+            }
+        }, 1000)
     }
 
     private fun startQrScanLegacy() {
@@ -208,7 +505,7 @@ class MainActivity : Activity() {
                 cm.requestNetwork(request, wifiCallback!!)
             } else {
                 updateStatus("수동 연결", "설정에서 연결하세요", Color.parseColor("#F57C00"))
-                startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
             }
         } catch (t: Throwable) {
             updateStatus("Wi-Fi 오류", t.message ?: "오류", Color.RED)
@@ -236,8 +533,7 @@ class MainActivity : Activity() {
 
     private fun startClientMode() {
         if (isClientMode) {
-            startService(Intent(this, VpnClientService::class.java).setAction("stop"))
-            isClientMode = false; updateStatus("대기 중", "연결 해제됨", Color.parseColor("#333333"))
+            stopClientSafely()
         } else {
             hostEt.visibility = View.VISIBLE
             val host = hostEt.text.toString().trim()
@@ -246,6 +542,34 @@ class MainActivity : Activity() {
             requestVpnPermissionAndStart(host)
         }
         refresh()
+    }
+
+    // ★ 안전한 클라이언트 종료 (네트워크 꼬임 방지)
+    private fun stopClientSafely() {
+        try {
+            startService(Intent(this, VpnClientService::class.java).setAction("stop"))
+            // ★★ 중요: 묶여있던 와이파이 네트워크 바인딩 해제
+            try {
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.bindProcessToNetwork(null)
+                AppLog.i("ui", "bindProcessToNetwork(null) 해제 완료")
+            } catch (t: Throwable) {
+                AppLog.e("ui", "네트워크 바인딩 해제 실패", t)
+            }
+            wifiCallback?.let {
+                try {
+                    val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                    cm.unregisterNetworkCallback(it)
+                    AppLog.i("ui", "NetworkCallback 해제 완료")
+                } catch (_: Throwable) {}
+            }
+            wifiCallback = null
+            pendingNetwork = null
+            isClientMode = false
+            updateStatus("대기 중", "VPN 연결 해제됨", Color.parseColor("#333333"))
+        } catch (t: Throwable) {
+            AppLog.e("ui", "종료 중 오류", t)
+        }
     }
 
     private fun requestVpnPermissionAndStart(host: String) {
@@ -259,7 +583,9 @@ class MainActivity : Activity() {
             val intent = Intent(this, VpnClientService::class.java).putExtra("host", host)
             pendingNetwork?.let { intent.putExtra("network", it) }
             startService(intent)
-            isClientMode = true; updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
+            isClientMode = true
+            lastTx = 0; lastRx = 0 // 통계 초기화
+            updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
         } catch (t: Throwable) { updateStatus("오류", t.message ?: "VPN 실패", Color.RED) }
     }
 
@@ -314,171 +640,112 @@ class MainActivity : Activity() {
             btnClient.text = "수동 연결\n(IP 입력)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
         }
     }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        uiHandler.removeCallbacksAndMessages(null)
+        if (isClientMode) {
+            stopClientSafely()
+        }
+    }
 }
 EOF
 
-# 2. VpnClientService.kt 수정 (전달받은 Network에 바인딩)
-cat > app/src/main/java/com/myinternet/share/VpnClientService.kt << 'EOF'
+# ---------------------------------------------------------
+# 3. ServerService.kt 수정 (접속자 수 공유)
+# ---------------------------------------------------------
+cat > app/src/main/java/com/myinternet/share/ServerService.kt << 'EOF'
 package com.myinternet.share
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.Service
 import android.content.Intent
-import android.net.ConnectivityManager
-import android.net.Network
-import android.net.VpnService
-import android.net.wifi.WifiManager
+import android.content.pm.ServiceInfo
 import android.os.Build
-import android.os.ParcelFileDescriptor
-import hev.htproxy.TProxyService
-import java.io.File
-import kotlin.concurrent.thread
+import android.os.IBinder
+import android.os.PowerManager
 
-class VpnClientService : VpnService() {
-    private var pfd: ParcelFileDescriptor? = null
-    private var wifiLock: WifiManager.WifiLock? = null
-    private var statsThread: Thread? = null
-    private var started = false
+class ServerService : Service() {
+    private var server: Socks5Server? = null
+    private var wl: PowerManager.WakeLock? = null
+
+    override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        AppLog.i("vpn", "onStartCommand action=${intent?.action} host=${intent?.getStringExtra("host")}")
-        if (intent?.action == "stop") {
-            stopTunnel()
-            stopSelf()
-            return START_NOT_STICKY
-        }
-        val host = intent?.getStringExtra("host") ?: return START_NOT_STICKY
-        
-        // ★★★ VPN 프로세스도 Wi-Fi 네트워크를 쓰도록 바인딩 (핵심 수정) ★★★
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            val network = intent.getParcelableExtra<Network>("network")
-            if (network != null) {
-                try {
-                    val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-                    cm.bindProcessToNetwork(network)
-                    AppLog.i("vpn", "VPN 프로세스가 Wi-Fi 네트워크에 바인딩됨: $network")
-                } catch (t: Throwable) {
-                    AppLog.e("vpn", "VPN 프로세스 네트워크 바인딩 실패", t)
-                }
-            }
-        }
-
-        startTunnel(host)
-        return START_NOT_STICKY
-    }
-
-    private fun startTunnel(host: String) {
-        stopTunnel()
+        AppLog.i("srv", "ServerService onStartCommand")
         try {
-            AppLog.i("vpn", "native 로드 시도")
-            Class.forName("hev.htproxy.TProxyService")
-            AppLog.i("vpn", "native 로드 OK")
-            val fd = Builder()
-                .setSession("MyInternet")
-                .setMtu(1500)
-                .addAddress("198.18.0.1", 32)
-                .addRoute("0.0.0.0", 0)
-                .addDnsServer("198.18.0.2")
-                .addDisallowedApplication(packageName)
-                .establish()
-            if (fd == null) {
-                AppLog.e("vpn", "establish() 가 null: VPN 권한이 없거나 다른 VPN이 우선")
-                return
-            }
-            pfd = fd
-            AppLog.i("vpn", "TUN 생성 fd=${fd.fd}")
-
-            try {
-                val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
-                @Suppress("DEPRECATION")
-                val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                           else WifiManager.WIFI_MODE_FULL_HIGH_PERF
-                wifiLock = wm.createWifiLock(mode, "myinternet").apply { setReferenceCounted(false); acquire() }
-            } catch (t: Throwable) {
-                AppLog.e("vpn", "Wi-Fi 락 실패", t)
-            }
-
-            val logFile = File(filesDir, "hev.log")
-            logFile.delete()
-            val cfg = File(filesDir, "hev.yml")
-            cfg.writeText(
-                """
-                tunnel:
-                  mtu: 1500
-                  ipv4: 198.18.0.1
-                socks5:
-                  address: $host
-                  port: ${ServerService.PORT}
-                  udp: 'udp'
-                  pipeline: true
-                mapdns:
-                  address: 198.18.0.2
-                  port: 53
-                  network: 100.64.0.0
-                  netmask: 255.192.0.0
-                  cache-size: 10000
-                misc:
-                  log-file: ${logFile.absolutePath}
-                  log-level: warn
-                """.trimIndent() + "\n"
+            val nm = getSystemService(NotificationManager::class.java)
+            nm.createNotificationChannel(
+                NotificationChannel("srv", "Server", NotificationManager.IMPORTANCE_LOW)
             )
-            AppLog.i("vpn", "hev 설정:\n" + cfg.readText())
-            val r = TProxyService.TProxyStartService(cfg.absolutePath, fd.fd)
-            started = true
-            AppLog.i("vpn", "TProxyStartService 반환: $r")
-            startStats()
-        } catch (t: Throwable) {
-            AppLog.e("vpn", "터널 시작 실패", t)
-            stopTunnel()
-        }
-    }
-
-    private fun startStats() {
-        statsThread = thread(isDaemon = true) {
-            try {
-                while (!Thread.currentThread().isInterrupted) {
-                    Thread.sleep(5000)
-                    val s = TProxyService.TProxyGetStats()
-                    if (s.size >= 4) {
-                        AppLog.i("hev", "통계 tx=${s[0]}pkt/${s[1]}B rx=${s[2]}pkt/${s[3]}B")
-                    }
-                }
-            } catch (_: InterruptedException) {
-            } catch (t: Throwable) {
-                AppLog.e("hev", "통계 오류", t)
+            val n = Notification.Builder(this, "srv")
+                .setContentTitle("MyInternet 서버 실행 중")
+                .setContentText("SOCKS5 포트 $PORT")
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .build()
+            if (Build.VERSION.SDK_INT >= 29) {
+                startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            } else {
+                startForeground(1, n)
             }
+            if (wl == null) {
+                wl = (getSystemService(POWER_SERVICE) as PowerManager)
+                    .newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "myinternet:server")
+                    .apply { setReferenceCounted(false); acquire() }
+            }
+            if (server == null) {
+                server = Socks5Server(PORT).also { it.start() }
+                running = true
+                // ★ Socks5Server의 카운터를 ServerService에서 접근 가능하도록 캐싱
+                serverInstance = server
+            }
+        } catch (t: Throwable) {
+            AppLog.e("srv", "서버 시작 실패", t)
+            running = false
+            server = null
+            stopSelf()
         }
-    }
-
-    private fun stopTunnel() {
-        statsThread?.interrupt()
-        statsThread = null
-        if (started) {
-            started = false
-            try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
-        }
-        try { pfd?.close() } catch (_: Exception) {}
-        pfd = null
-        try { wifiLock?.release() } catch (_: Exception) {}
-        wifiLock = null
-    }
-
-    override fun onRevoke() {
-        AppLog.i("vpn", "onRevoke")
-        stopTunnel()
-        stopSelf()
+        return START_STICKY
     }
 
     override fun onDestroy() {
-        stopTunnel()
+        AppLog.i("srv", "ServerService onDestroy")
+        server?.stop()
+        server = null
+        serverInstance = null
+        running = false
+        try { wl?.release() } catch (_: Exception) {}
+        wl = null
         super.onDestroy()
+    }
+
+    companion object {
+        const val PORT = 1080
+
+        @Volatile
+        var running = false
+
+        // ★ MainActivity에서 접속자 수를 읽기 위한 인스턴스 참조
+        @Volatile
+        var serverInstance: Socks5Server? = null
+
+        // ★ 실시간 접속자 수 반환
+        val activeClientCount: Int
+            get() = serverInstance?.activeConnections?.get() ?: 0
     }
 }
 EOF
 
-# 3. Git Push
+# ---------------------------------------------------------
+# 4. Git Push
+# ---------------------------------------------------------
+echo -e "${BLUE}--- Git 커밋 및 푸시 ---${NC}"
 git add .
-git commit -m "fix: bind VpnService process to the requested Wi-Fi network"
+git commit -m "feat: add real-time traffic stats, client counter, and safe disconnect"
 git push origin $(git rev-parse --abbrev-ref HEAD)
 
 echo -e "${GREEN}===========================================${NC}"
-echo -e "${GREEN} 완료! GitHub Actions 빌드 후 다시 테스트해보세요.${NC}"
+echo -e "${GREEN} 완료! GitHub Actions 빌드 확인${NC}"
 echo -e "${GREEN}===========================================${NC}"

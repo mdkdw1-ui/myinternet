@@ -14,6 +14,8 @@ import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -21,6 +23,7 @@ import android.view.View
 import android.widget.*
 import com.google.zxing.integration.android.IntentIntegrator
 import com.google.zxing.integration.android.IntentResult
+import hev.htproxy.TProxyService
 
 class MainActivity : Activity() {
     private lateinit var hostEt: EditText
@@ -30,16 +33,23 @@ class MainActivity : Activity() {
     private lateinit var btnClient: Button
     private lateinit var btnScan: Button
     private lateinit var qrView: ImageView
+    private lateinit var statsText: TextView // ★ 트래픽 표시용
+    
     private var lastQr = ""
     private var isClientMode = false
     private var pendingHost = ""
     private var pendingNetwork: android.net.Network? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
+    
+    private var lastTx = 0L
+    private var lastRx = 0L
+    private val uiHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNecessaryPermissions()
         buildPremiumUI()
+        startStatsUpdater()
     }
 
     private fun requestNecessaryPermissions() {
@@ -66,6 +76,7 @@ class MainActivity : Activity() {
             setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
         })
 
+        // 상태 카드
         val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
             setPadding(pad, pad, pad, pad); setElevation(10f)
@@ -78,9 +89,18 @@ class MainActivity : Activity() {
             text = "아래 버튼을 눌러 시작하세요"; textSize = 14f
             setTextColor(Color.parseColor("#666666")); gravity = Gravity.CENTER; setPadding(0, 8, 0, 0)
         }
-        statusCard.addView(statusTitle); statusCard.addView(statusDesc)
+        
+        // ★ 실시간 트래픽 표시
+        statsText = TextView(this).apply {
+            text = "속도: - | 데이터: -"; textSize = 13f
+            setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER; setPadding(0, 12, 0, 0)
+            setTypeface(null, Typeface.MONOSPACE)
+        }
+        
+        statusCard.addView(statusTitle); statusCard.addView(statusDesc); statusCard.addView(statsText)
         root.addView(statusCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, pad, 0, pad) })
 
+        // 메인 버튼
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnServer = Button(this).apply {
             text = "서버 시작\n(데이터 폰)"; textSize = 16f; setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE)
@@ -123,6 +143,48 @@ class MainActivity : Activity() {
 
         setContentView(ScrollView(this).apply { addView(root) })
         refresh()
+    }
+
+    // ★ 1초마다 트래픽 및 접속자 수 갱신
+    private fun startStatsUpdater() {
+        uiHandler.postDelayed(object : Runnable {
+            override fun run() {
+                try {
+                    if (isClientMode) {
+                        val stats = TProxyService.TProxyGetStats()
+                        if (stats.size >= 4) {
+                            val tx = stats[1]
+                            val rx = stats[3]
+                            
+                            val dTx = tx - lastTx
+                            val dRx = rx - lastRx
+                            
+                            // 포맷팅 함수 (B -> KB/MB)
+                            fun formatBytes(b: Long): String {
+                                if (b < 1024) return "${b}B"
+                                if (b < 1024 * 1024) return String.format("%.1fKB", b / 1024.0)
+                                return String.format("%.1fMB", b / (1024.0 * 1024.0))
+                            }
+                            
+                            val upSpeed = formatBytes(dTx)
+                            val downSpeed = formatBytes(dRx)
+                            val totalUsed = formatBytes(tx + rx)
+                            
+                            statsText.text = "▼ ${downSpeed}/s  ▲ ${upSpeed}/s  |  누적: ${totalUsed}"
+                            
+                            lastTx = tx
+                            lastRx = rx
+                        }
+                    } else if (ServerService.running) {
+                        // 서버 모드일 때는 접속자 수 표시 (ServerService에서 가져옴)
+                        statsText.text = "접속 중인 클라이언트: ${ServerService.activeClientCount}대"
+                    } else {
+                        statsText.text = "속도: - | 데이터: -"
+                    }
+                } catch (_: Throwable) {}
+                uiHandler.postDelayed(this, 1000)
+            }
+        }, 1000)
     }
 
     private fun startQrScanLegacy() {
@@ -191,7 +253,7 @@ class MainActivity : Activity() {
                 cm.requestNetwork(request, wifiCallback!!)
             } else {
                 updateStatus("수동 연결", "설정에서 연결하세요", Color.parseColor("#F57C00"))
-                startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
             }
         } catch (t: Throwable) {
             updateStatus("Wi-Fi 오류", t.message ?: "오류", Color.RED)
@@ -219,8 +281,7 @@ class MainActivity : Activity() {
 
     private fun startClientMode() {
         if (isClientMode) {
-            startService(Intent(this, VpnClientService::class.java).setAction("stop"))
-            isClientMode = false; updateStatus("대기 중", "연결 해제됨", Color.parseColor("#333333"))
+            stopClientSafely()
         } else {
             hostEt.visibility = View.VISIBLE
             val host = hostEt.text.toString().trim()
@@ -229,6 +290,34 @@ class MainActivity : Activity() {
             requestVpnPermissionAndStart(host)
         }
         refresh()
+    }
+
+    // ★ 안전한 클라이언트 종료 (네트워크 꼬임 방지)
+    private fun stopClientSafely() {
+        try {
+            startService(Intent(this, VpnClientService::class.java).setAction("stop"))
+            // ★★ 중요: 묶여있던 와이파이 네트워크 바인딩 해제
+            try {
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.bindProcessToNetwork(null)
+                AppLog.i("ui", "bindProcessToNetwork(null) 해제 완료")
+            } catch (t: Throwable) {
+                AppLog.e("ui", "네트워크 바인딩 해제 실패", t)
+            }
+            wifiCallback?.let {
+                try {
+                    val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                    cm.unregisterNetworkCallback(it)
+                    AppLog.i("ui", "NetworkCallback 해제 완료")
+                } catch (_: Throwable) {}
+            }
+            wifiCallback = null
+            pendingNetwork = null
+            isClientMode = false
+            updateStatus("대기 중", "VPN 연결 해제됨", Color.parseColor("#333333"))
+        } catch (t: Throwable) {
+            AppLog.e("ui", "종료 중 오류", t)
+        }
     }
 
     private fun requestVpnPermissionAndStart(host: String) {
@@ -242,7 +331,9 @@ class MainActivity : Activity() {
             val intent = Intent(this, VpnClientService::class.java).putExtra("host", host)
             pendingNetwork?.let { intent.putExtra("network", it) }
             startService(intent)
-            isClientMode = true; updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
+            isClientMode = true
+            lastTx = 0; lastRx = 0 // 통계 초기화
+            updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
         } catch (t: Throwable) { updateStatus("오류", t.message ?: "VPN 실패", Color.RED) }
     }
 
@@ -295,6 +386,14 @@ class MainActivity : Activity() {
             btnClient.text = "연결 해제"; btnClient.setBackgroundColor(Color.parseColor("#C62828"))
         } else {
             btnClient.text = "수동 연결\n(IP 입력)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        uiHandler.removeCallbacksAndMessages(null)
+        if (isClientMode) {
+            stopClientSafely()
         }
     }
 }

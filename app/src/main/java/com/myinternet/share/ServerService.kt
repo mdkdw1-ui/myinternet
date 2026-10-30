@@ -41,6 +41,8 @@ class ServerService : Service() {
             if (server == null) {
                 server = Socks5Server(PORT).also { it.start() }
                 running = true
+                // ★ Socks5Server의 카운터를 ServerService에서 접근 가능하도록 캐싱
+                serverInstance = server
             }
         } catch (t: Throwable) {
             AppLog.e("srv", "서버 시작 실패", t)
@@ -55,6 +57,7 @@ class ServerService : Service() {
         AppLog.i("srv", "ServerService onDestroy")
         server?.stop()
         server = null
+        serverInstance = null
         running = false
         try { wl?.release() } catch (_: Exception) {}
         wl = null
@@ -66,5 +69,13 @@ class ServerService : Service() {
 
         @Volatile
         var running = false
+
+        // ★ MainActivity에서 접속자 수를 읽기 위한 인스턴스 참조
+        @Volatile
+        var serverInstance: Socks5Server? = null
+
+        // ★ 실시간 접속자 수 반환
+        val activeClientCount: Int
+            get() = serverInstance?.activeConnections?.get() ?: 0
     }
 }
