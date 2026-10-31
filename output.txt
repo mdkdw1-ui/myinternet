@@ -405,6 +405,8 @@ import android.net.wifi.WifiManager
 import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
@@ -412,6 +414,7 @@ import android.view.View
 import android.widget.*
 import com.google.zxing.integration.android.IntentIntegrator
 import com.google.zxing.integration.android.IntentResult
+import hev.htproxy.TProxyService
 
 class MainActivity : Activity() {
     private lateinit var hostEt: EditText
@@ -419,18 +422,26 @@ class MainActivity : Activity() {
     private lateinit var statusDesc: TextView
     private lateinit var btnServer: Button
     private lateinit var btnClient: Button
+    private lateinit var btnDisconnect: Button // ★ 명확한 해제 버튼 추가
     private lateinit var btnScan: Button
     private lateinit var qrView: ImageView
+    private lateinit var statsText: TextView
+    
     private var lastQr = ""
     private var isClientMode = false
     private var pendingHost = ""
     private var pendingNetwork: android.net.Network? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
+    
+    private var lastTx = 0L
+    private var lastRx = 0L
+    private val uiHandler = Handler(Looper.getMainLooper())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         requestNecessaryPermissions()
         buildPremiumUI()
+        startStatsUpdater()
     }
 
     private fun requestNecessaryPermissions() {
@@ -452,11 +463,14 @@ class MainActivity : Activity() {
             setPadding(pad, pad, pad, pad)
             setBackgroundColor(Color.parseColor("#F5F7FA"))
         }
+        
+        // 타이틀
         root.addView(TextView(this).apply {
             text = "MyInternet"; textSize = 28f; setTextColor(Color.parseColor("#0D47A1"))
             setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
         })
 
+        // 상태 카드
         val statusCard = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
             setPadding(pad, pad, pad, pad); setElevation(10f)
@@ -469,9 +483,16 @@ class MainActivity : Activity() {
             text = "아래 버튼을 눌러 시작하세요"; textSize = 14f
             setTextColor(Color.parseColor("#666666")); gravity = Gravity.CENTER; setPadding(0, 8, 0, 0)
         }
-        statusCard.addView(statusTitle); statusCard.addView(statusDesc)
+        statsText = TextView(this).apply {
+            text = "속도: - | 데이터: -"; textSize = 13f
+            setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER; setPadding(0, 12, 0, 0)
+            setTypeface(Typeface.MONOSPACE)
+        }
+        
+        statusCard.addView(statusTitle); statusCard.addView(statusDesc); statusCard.addView(statsText)
         root.addView(statusCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, pad, 0, pad) })
 
+        // 서버/클라 시작 버튼
         val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
         btnServer = Button(this).apply {
             text = "서버 시작\n(데이터 폰)"; textSize = 16f; setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE)
@@ -485,12 +506,14 @@ class MainActivity : Activity() {
         btnRow.addView(btnClient, LinearLayout.LayoutParams(0, (80 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(8, 0, 8, 0) })
         root.addView(btnRow)
 
+        // QR 스캔 버튼
         btnScan = Button(this).apply {
             text = "QR 코드 스캔하여 자동 연결"; textSize = 16f; setBackgroundColor(Color.parseColor("#F57C00")); setTextColor(Color.WHITE)
             setOnClickListener { startQrScanLegacy() }
         }
         root.addView(btnScan, LinearLayout.LayoutParams(-1, (60 * resources.displayMetrics.density).toInt()).apply { setMargins(8, pad, 8, 0) })
 
+        // IP 입력창
         hostEt = EditText(this).apply {
             hint = "서버 IP 주소"; inputType = InputType.TYPE_CLASS_TEXT
             setText(NetUtil.serverHost(this@MainActivity)); visibility = View.GONE
@@ -498,11 +521,29 @@ class MainActivity : Activity() {
         }
         root.addView(hostEt)
 
+        // QR 이미지 뷰
         qrView = ImageView(this).apply { visibility = View.GONE; scaleType = ImageView.ScaleType.FIT_CENTER }
         root.addView(qrView, LinearLayout.LayoutParams((200 * resources.displayMetrics.density).toInt(), (200 * resources.displayMetrics.density).toInt()).apply { gravity = Gravity.CENTER; setMargins(0, pad, 0, pad) })
 
+        // ★ 빨간색 [연결 해제] 버튼 (항상 보임)
+        btnDisconnect = Button(this).apply {
+            text = "클라이언트 연결 해제 (OFF)"
+            textSize = 16f
+            setBackgroundColor(Color.parseColor("#D32F2F")) // 빨간색
+            setTextColor(Color.WHITE)
+            setOnClickListener { 
+                if (isClientMode) {
+                    stopClientSafely()
+                } else {
+                    Toast.makeText(context, "현재 연결된 VPN이 없습니다.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+        root.addView(btnDisconnect, LinearLayout.LayoutParams(-1, (60 * resources.displayMetrics.density).toInt()).apply { setMargins(8, pad, 8, 0) })
+
         root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) })
 
+        // 하단 유틸리티
         val utilRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
         fun utilBtn(t: String, f: () -> Unit) = Button(this).apply {
             text = t; textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0")); setOnClickListener { f() }
@@ -514,6 +555,45 @@ class MainActivity : Activity() {
 
         setContentView(ScrollView(this).apply { addView(root) })
         refresh()
+    }
+
+    private fun startStatsUpdater() {
+        uiHandler.postDelayed(object : Runnable {
+            override fun run() {
+                try {
+                    if (isClientMode) {
+                        val stats = TProxyService.TProxyGetStats()
+                        if (stats.size >= 4) {
+                            val tx = stats[1]
+                            val rx = stats[3]
+                            
+                            val dTx = tx - lastTx
+                            val dRx = rx - lastRx
+                            
+                            fun formatBytes(b: Long): String {
+                                if (b < 1024) return "${b}B"
+                                if (b < 1024 * 1024) return String.format("%.1fKB", b / 1024.0)
+                                return String.format("%.1fMB", b / (1024.0 * 1024.0))
+                            }
+                            
+                            val upSpeed = formatBytes(dTx)
+                            val downSpeed = formatBytes(dRx)
+                            val totalUsed = formatBytes(tx + rx)
+                            
+                            statsText.text = "▼ ${downSpeed}/s  ▲ ${upSpeed}/s  |  누적: ${totalUsed}"
+                            
+                            lastTx = tx
+                            lastRx = rx
+                        }
+                    } else if (ServerService.running) {
+                        statsText.text = "접속 중인 클라이언트: ${ServerService.activeClientCount}대"
+                    } else {
+                        statsText.text = "속도: - | 데이터: -"
+                    }
+                } catch (_: Throwable) {}
+                uiHandler.postDelayed(this, 1000)
+            }
+        }, 1000)
     }
 
     private fun startQrScanLegacy() {
@@ -582,7 +662,7 @@ class MainActivity : Activity() {
                 cm.requestNetwork(request, wifiCallback!!)
             } else {
                 updateStatus("수동 연결", "설정에서 연결하세요", Color.parseColor("#F57C00"))
-                startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
             }
         } catch (t: Throwable) {
             updateStatus("Wi-Fi 오류", t.message ?: "오류", Color.RED)
@@ -610,8 +690,7 @@ class MainActivity : Activity() {
 
     private fun startClientMode() {
         if (isClientMode) {
-            startService(Intent(this, VpnClientService::class.java).setAction("stop"))
-            isClientMode = false; updateStatus("대기 중", "연결 해제됨", Color.parseColor("#333333"))
+            stopClientSafely()
         } else {
             hostEt.visibility = View.VISIBLE
             val host = hostEt.text.toString().trim()
@@ -620,6 +699,42 @@ class MainActivity : Activity() {
             requestVpnPermissionAndStart(host)
         }
         refresh()
+    }
+
+    // ★ 안전한 클라이언트 종료
+    private fun stopClientSafely() {
+        try {
+            // 1. 서비스 종료 명령
+            startService(Intent(this, VpnClientService::class.java).setAction("stop"))
+            
+            // 2. 네트워크 바인딩 해제 (다른 와이파이 사용 가능하게)
+            try {
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.bindProcessToNetwork(null)
+                AppLog.i("ui", "bindProcessToNetwork(null) 해제 완료")
+            } catch (t: Throwable) {
+                AppLog.e("ui", "네트워크 바인딩 해제 실패", t)
+            }
+            
+            // 3. 와이파이 콜백 해제
+            wifiCallback?.let {
+                try {
+                    val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                    cm.unregisterNetworkCallback(it)
+                    AppLog.i("ui", "NetworkCallback 해제 완료")
+                } catch (_: Throwable) {}
+            }
+            wifiCallback = null
+            pendingNetwork = null
+            
+            // 4. UI 상태 변경
+            isClientMode = false
+            updateStatus("대기 중", "VPN 연결 해제됨", Color.parseColor("#333333"))
+            refresh()
+            Toast.makeText(this, "VPN 연결이 안전하게 해제되었습니다.", Toast.LENGTH_SHORT).show()
+        } catch (t: Throwable) {
+            AppLog.e("ui", "종료 중 오류", t)
+        }
     }
 
     private fun requestVpnPermissionAndStart(host: String) {
@@ -633,7 +748,10 @@ class MainActivity : Activity() {
             val intent = Intent(this, VpnClientService::class.java).putExtra("host", host)
             pendingNetwork?.let { intent.putExtra("network", it) }
             startService(intent)
-            isClientMode = true; updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
+            isClientMode = true
+            lastTx = 0; lastRx = 0
+            updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
+            refresh()
         } catch (t: Throwable) { updateStatus("오류", t.message ?: "VPN 실패", Color.RED) }
     }
 
@@ -683,9 +801,21 @@ class MainActivity : Activity() {
             btnServer.text = "서버 시작\n(데이터 폰)"; btnServer.setBackgroundColor(Color.parseColor("#1565C0"))
         }
         if (isClientMode) {
-            btnClient.text = "연결 해제"; btnClient.setBackgroundColor(Color.parseColor("#C62828"))
+            btnClient.text = "수동 연결\n(연결됨)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
+            btnClient.isEnabled = false // 이미 연결됐으니 비활성화
+            btnDisconnect.isEnabled = true // 해제 버튼 활성화
         } else {
             btnClient.text = "수동 연결\n(IP 입력)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
+            btnClient.isEnabled = true
+            btnDisconnect.isEnabled = false // 연결 안 됐을 때 해제 버튼 비활성화
+        }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        uiHandler.removeCallbacksAndMessages(null)
+        if (isClientMode) {
+            stopClientSafely()
         }
     }
 }
@@ -850,6 +980,8 @@ class ServerService : Service() {
             if (server == null) {
                 server = Socks5Server(PORT).also { it.start() }
                 running = true
+                // ★ Socks5Server의 카운터를 ServerService에서 접근 가능하도록 캐싱
+                serverInstance = server
             }
         } catch (t: Throwable) {
             AppLog.e("srv", "서버 시작 실패", t)
@@ -864,6 +996,7 @@ class ServerService : Service() {
         AppLog.i("srv", "ServerService onDestroy")
         server?.stop()
         server = null
+        serverInstance = null
         running = false
         try { wl?.release() } catch (_: Exception) {}
         wl = null
@@ -875,6 +1008,14 @@ class ServerService : Service() {
 
         @Volatile
         var running = false
+
+        // ★ MainActivity에서 접속자 수를 읽기 위한 인스턴스 참조
+        @Volatile
+        var serverInstance: Socks5Server? = null
+
+        // ★ 실시간 접속자 수 반환
+        val activeClientCount: Int
+            get() = serverInstance?.activeConnections?.get() ?: 0
     }
 }
 -e 
@@ -894,6 +1035,7 @@ import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
 
 class Socks5Server(private val port: Int) {
@@ -902,6 +1044,9 @@ class Socks5Server(private val port: Int) {
 
     @Volatile
     private var running = false
+
+    // ★ 접속자 수 카운터 (UI 표시용)
+    val activeConnections = AtomicInteger(0)
 
     fun start() {
         running = true
@@ -931,6 +1076,7 @@ class Socks5Server(private val port: Int) {
     }
 
     private fun handle(c: Socket) {
+        activeConnections.incrementAndGet()
         try {
             c.tcpNoDelay = true
             val i = DataInputStream(c.getInputStream())
@@ -962,6 +1108,7 @@ class Socks5Server(private val port: Int) {
         } catch (e: Exception) {
             AppLog.e("srv", "세션 예외 ${e.javaClass.simpleName} ${e.message}")
         } finally {
+            activeConnections.decrementAndGet()
             try { c.close() } catch (_: Exception) {}
         }
     }
@@ -971,12 +1118,10 @@ class Socks5Server(private val port: Int) {
         o.flush()
     }
 
-    // 도메인/IP 문자열 -> 주소 목록 (IPv4 먼저)
     private fun resolve(host: String): List<InetAddress> =
         InetAddress.getAllByName(host).sortedBy { if (it is Inet4Address) 0 else 1 }
 
     private fun tcpConnect(c: Socket, i: InputStream, o: OutputStream, host: String, dport: Int) {
-        // mapdns 주소(198.18.*)로 오는 DoT 등은 바로 거절 (타임아웃 대기 방지)
         if (host.startsWith("198.18.")) {
             reply(o, 5)
             return
@@ -1063,7 +1208,6 @@ class Socks5Server(private val port: Int) {
                                 try {
                                     dnsCache.getOrPut(h) { resolve(h).first() }
                                 } catch (e: Exception) {
-                                    // 해석 실패한 패킷만 버리고 릴레이는 계속 유지
                                     continue
                                 }
                             }

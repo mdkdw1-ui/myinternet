@@ -38,6 +38,15 @@ object NetUtil {
         return serverHost(ctx)
     }
 
+    fun saveWgConf(ctx: Context, conf: String) {
+        try { java.io.File(ctx.filesDir, "wg.conf").writeText(conf) } catch (_: Throwable) {}
+    }
+
+    fun loadWgConf(ctx: Context): String = try {
+        val f = java.io.File(ctx.filesDir, "wg.conf")
+        if (f.exists()) f.readText() else ""
+    } catch (_: Throwable) { "" }
+
     fun serverHost(ctx: Context): String {
         try {
             val cm = ctx.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager

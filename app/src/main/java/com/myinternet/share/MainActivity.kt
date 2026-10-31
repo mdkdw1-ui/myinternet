@@ -38,6 +38,10 @@ class MainActivity : Activity() {
     
     private var lastQr = ""
     private var isClientMode = false
+    private var isWgMode = false
+    private var btnWg: Button? = null
+    private var wgConfEt: EditText? = null
+    private var btnWgStop: Button? = null
     private var pendingHost = ""
     private var pendingNetwork: android.net.Network? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
@@ -141,7 +145,15 @@ class MainActivity : Activity() {
             setBackgroundColor(Color.parseColor("#D32F2F")) // 빨간색
             setTextColor(Color.WHITE)
             setOnClickListener { 
-                if (isClientMode) {
+                btnWg?.isEnabled = !isClientMode && !isWgMode
+        btnWgStop?.isEnabled = isWgMode
+        if (isWgMode) {
+            btnClient.isEnabled = false
+            btnDisconnect.isEnabled = false
+        } else if (!isClientMode) {
+            btnClient.isEnabled = true
+        }
+        if (isClientMode) {
                     stopClientSafely()
                 } else {
                     Toast.makeText(context, "현재 연결된 VPN이 없습니다.", Toast.LENGTH_SHORT).show()
@@ -150,7 +162,37 @@ class MainActivity : Activity() {
         }
         root.addView(btnDisconnect, LinearLayout.LayoutParams(-1, (60 * resources.displayMetrics.density).toInt()).apply { setMargins(8, pad, 8, 0) })
 
+        
+        // ★ WireGuard 클라이언트 영역
+        val wgLabel = TextView(this).apply {
+            text = "WireGuard client.conf 붙여넣기"; textSize = 13f
+            setTextColor(Color.parseColor("#4A148C")); setPadding(0, pad, 0, 4)
+        }
+        wgConfEt = EditText(this).apply {
+            hint = "[Interface]\nPrivateKey = ...\nAddress = ...\n\n[Peer]\nPublicKey = ...\nEndpoint = ...\nAllowedIPs = ..."
+            textSize = 11f; gravity = Gravity.START or Gravity.TOP
+            setSingleLine(false); setLines(6)
+            setText(NetUtil.loadWgConf(this@MainActivity))
+            setPadding(pad, pad, pad, pad)
+        }
+        val wgRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btnWg = Button(this).apply {
+            text = "WireGuard ON"; textSize = 15f
+            setBackgroundColor(Color.parseColor("#6A1B9A")); setTextColor(Color.WHITE)
+            setOnClickListener { startWireGuard() }
+        }
+        btnWgStop = Button(this).apply {
+            text = "WireGuard OFF"; textSize = 15f
+            setBackgroundColor(Color.parseColor("#4A148C")); setTextColor(Color.WHITE)
+            setOnClickListener { stopWireGuard() }
+        }
+        wgRow.addView(btnWg, LinearLayout.LayoutParams(0, (56 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(0, 0, 4, 0) })
+        wgRow.addView(btnWgStop, LinearLayout.LayoutParams(0, (56 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(4, 0, 0, 0) })
+        root.addView(wgLabel)
+        root.addView(wgConfEt, LinearLayout.LayoutParams(-1, (140 * resources.displayMetrics.density).toInt()).apply { setMargins(0, 0, 0, 8) })
+        root.addView(wgRow)
         root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) })
+
 
         // 하단 유틸리티
         val utilRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
@@ -170,7 +212,15 @@ class MainActivity : Activity() {
         uiHandler.postDelayed(object : Runnable {
             override fun run() {
                 try {
-                    if (isClientMode) {
+                    btnWg?.isEnabled = !isClientMode && !isWgMode
+        btnWgStop?.isEnabled = isWgMode
+        if (isWgMode) {
+            btnClient.isEnabled = false
+            btnDisconnect.isEnabled = false
+        } else if (!isClientMode) {
+            btnClient.isEnabled = true
+        }
+        if (isClientMode) {
                         val stats = TProxyService.TProxyGetStats()
                         if (stats.size >= 4) {
                             val tx = stats[1]
@@ -298,6 +348,14 @@ class MainActivity : Activity() {
     }
 
     private fun startClientMode() {
+        btnWg?.isEnabled = !isClientMode && !isWgMode
+        btnWgStop?.isEnabled = isWgMode
+        if (isWgMode) {
+            btnClient.isEnabled = false
+            btnDisconnect.isEnabled = false
+        } else if (!isClientMode) {
+            btnClient.isEnabled = true
+        }
         if (isClientMode) {
             stopClientSafely()
         } else {
@@ -311,6 +369,63 @@ class MainActivity : Activity() {
     }
 
     // ★ 안전한 클라이언트 종료
+
+    private fun startWireGuard() {
+        val conf = wgConfEt?.text?.toString()?.trim() ?: ""
+        if (conf.isEmpty() || !conf.contains("[Interface]") || !conf.contains("[Peer]")) {
+            Toast.makeText(this, "client.conf 전체를 붙여넣으세요", Toast.LENGTH_SHORT).show()
+            return
+        }
+        btnWg?.isEnabled = !isClientMode && !isWgMode
+        btnWgStop?.isEnabled = isWgMode
+        if (isWgMode) {
+            btnClient.isEnabled = false
+            btnDisconnect.isEnabled = false
+        } else if (!isClientMode) {
+            btnClient.isEnabled = true
+        }
+        if (isClientMode) {
+            Toast.makeText(this, "myinternet VPN을 먼저 끄세요", Toast.LENGTH_SHORT).show()
+            return
+        }
+        try {
+            NetUtil.saveWgConf(this, conf)
+            val f = java.io.File(filesDir, "wg.conf")
+            val prep = VpnService.prepare(this)
+            if (prep != null) {
+                pendingHost = "WG"
+                @Suppress("DEPRECATION")
+                startActivityForResult(prep, 101)
+            } else {
+                reallyStartWg(f.absolutePath)
+            }
+        } catch (t: Throwable) {
+            AppLog.e("ui", "WireGuard 시작 준비 실패", t)
+            Toast.makeText(this, "오류: ${t.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun reallyStartWg(confPath: String) {
+        try {
+            startService(Intent(this, WireGuardService::class.java).setAction("start").putExtra("confPath", confPath))
+            isWgMode = true
+            updateStatus("WireGuard 연결됨", "client.conf 적용", Color.parseColor("#6A1B9A"))
+            refresh()
+        } catch (t: Throwable) {
+            AppLog.e("ui", "WireGuard 서비스 시작 실패", t)
+            Toast.makeText(this, "서비스 시작 실패: ${t.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun stopWireGuard() {
+        try {
+            startService(Intent(this, WireGuardService::class.java).setAction("stop"))
+        } catch (_: Throwable) {}
+        isWgMode = false
+        updateStatus("대기 중", "WireGuard 해제됨", Color.parseColor("#333333"))
+        refresh()
+    }
+
     private fun stopClientSafely() {
         try {
             // 1. 서비스 종료 명령
@@ -386,6 +501,11 @@ class MainActivity : Activity() {
             } else {
                 handleWifiQr(result.contents)
             }
+        } else if (requestCode == 101) {
+            if (resultCode == Activity.RESULT_OK) {
+                val f = java.io.File(filesDir, "wg.conf")
+                reallyStartWg(f.absolutePath)
+            } else updateStatus("권한 거부", "WireGuard VPN 권한 필요", Color.RED)
         } else if (requestCode == 100) {
             if (resultCode == Activity.RESULT_OK) startVpn(pendingHost)
             else updateStatus("권한 거부", "VPN 필요", Color.RED)
@@ -409,6 +529,14 @@ class MainActivity : Activity() {
         } else {
             btnServer.text = "서버 시작\n(데이터 폰)"; btnServer.setBackgroundColor(Color.parseColor("#1565C0"))
         }
+        btnWg?.isEnabled = !isClientMode && !isWgMode
+        btnWgStop?.isEnabled = isWgMode
+        if (isWgMode) {
+            btnClient.isEnabled = false
+            btnDisconnect.isEnabled = false
+        } else if (!isClientMode) {
+            btnClient.isEnabled = true
+        }
         if (isClientMode) {
             btnClient.text = "수동 연결\n(연결됨)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
             btnClient.isEnabled = false // 이미 연결됐으니 비활성화
@@ -423,6 +551,14 @@ class MainActivity : Activity() {
     override fun onDestroy() {
         super.onDestroy()
         uiHandler.removeCallbacksAndMessages(null)
+        btnWg?.isEnabled = !isClientMode && !isWgMode
+        btnWgStop?.isEnabled = isWgMode
+        if (isWgMode) {
+            btnClient.isEnabled = false
+            btnDisconnect.isEnabled = false
+        } else if (!isClientMode) {
+            btnClient.isEnabled = true
+        }
         if (isClientMode) {
             stopClientSafely()
         }
