@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.ConnectivityManager
@@ -180,6 +181,25 @@ class MainActivity : Activity() {
             text = "WireGuard ON"; textSize = 15f
             setBackgroundColor(Color.parseColor("#6A1B9A")); setTextColor(Color.WHITE)
             setOnClickListener { startWireGuard() }
+        val wgFileBtn = Button(this).apply {
+            text = "client.conf 파일 선택"
+            textSize = 13f
+            setBackgroundColor(Color.parseColor("#455A64"))
+            setTextColor(Color.WHITE)
+            setOnClickListener {
+                try {
+                    val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                        addCategory(Intent.CATEGORY_OPENABLE)
+                        type = "*/*"
+                    }
+                    @Suppress("DEPRECATION")
+                    startActivityForResult(i, 102)
+                } catch (t: Throwable) {
+                    Toast.makeText(this@MainActivity, "파일 선택기 오류: " + t.message, Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+        root.addView(wgFileBtn, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, 8) })
         }
         btnWgStop = Button(this).apply {
             text = "WireGuard OFF"; textSize = 15f
@@ -500,6 +520,25 @@ class MainActivity : Activity() {
                 updateStatus("스캔 취소", "QR 스캔이 취소되었습니다.", Color.GRAY)
             } else {
                 handleWifiQr(result.contents)
+            }
+        } else if (requestCode == 102) {
+            if (resultCode == Activity.RESULT_OK && data?.data != null) {
+                try {
+                    val text = contentResolver.openInputStream(data.data!!)?.bufferedReader()?.use { it.readText() } ?: ""
+                    if (text.isNotBlank()) {
+                        wgConfEt?.setText(text)
+                        NetUtil.saveWgConf(this, text)
+                        Toast.makeText(this, "client.conf 로드 (" + text.length + "자)", Toast.LENGTH_SHORT).show()
+                        AppLog.i("ui", "conf 파일 로드 " + text.length + "자")
+                    } else {
+                        Toast.makeText(this, "파일이 비어있음", Toast.LENGTH_SHORT).show()
+                    }
+                } catch (t: Throwable) {
+                    AppLog.e("ui", "conf 읽기 실패", t)
+                    Toast.makeText(this, "읽기 실패: " + t.message, Toast.LENGTH_LONG).show()
+                }
+            } else {
+                Toast.makeText(this, "파일 선택 취소", Toast.LENGTH_SHORT).show()
             }
         } else if (requestCode == 101) {
             if (resultCode == Activity.RESULT_OK) {
