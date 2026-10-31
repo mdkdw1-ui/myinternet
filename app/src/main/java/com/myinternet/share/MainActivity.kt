@@ -4,6 +4,7 @@ import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
+import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.ConnectivityManager
@@ -39,6 +40,7 @@ class MainActivity : Activity() {
     private var lastQr = ""
     private var isClientMode = false
     private var isWgMode = false
+    private var wgConfPath: String = ""
     private var btnWg: Button? = null
     private var wgConfEt: EditText? = null
     private var btnWgStop: Button? = null
@@ -189,6 +191,16 @@ class MainActivity : Activity() {
         wgRow.addView(btnWg, LinearLayout.LayoutParams(0, (56 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(0, 0, 4, 0) })
         wgRow.addView(btnWgStop, LinearLayout.LayoutParams(0, (56 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(4, 0, 0, 0) })
         root.addView(wgLabel)
+        val fileRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL }
+        val fileBtn = Button(this).apply {
+            text = "파일에서 client.conf 선택"
+            textSize = 13f
+            setBackgroundColor(Color.parseColor("#455A64"))
+            setTextColor(Color.WHITE)
+            setOnClickListener { pickWgFile() }
+        }
+        fileRow.addView(fileBtn, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT))
+        root.addView(fileRow, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 0, 0, 8) })
         root.addView(wgConfEt, LinearLayout.LayoutParams(-1, (140 * resources.displayMetrics.density).toInt()).apply { setMargins(0, 0, 0, 8) })
         root.addView(wgRow)
         root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) })
@@ -378,10 +390,40 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun pickWgFile() {
+        try {
+            val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "*/*"
+            }
+            @Suppress("DEPRECATION")
+            startActivityForResult(i, 102)
+        } catch (t: Throwable) {
+            Toast.makeText(this, "파일 선택기 오류: ${t.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
+    private fun loadWgFileToEdit(uri: Uri) {
+        try {
+            val text = contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: return
+            wgConfEt?.setText(text)
+            NetUtil.saveWgConf(this, text)
+            Toast.makeText(this, "client.conf 불러옴 (${text.length}자)", Toast.LENGTH_SHORT).show()
+            AppLog.i("ui", "client.conf 로드 ${text.length}자")
+        } catch (t: Throwable) {
+            AppLog.e("ui", "conf 파일 읽기 실패", t)
+            Toast.makeText(this, "읽기 실패: ${t.message}", Toast.LENGTH_LONG).show()
+        }
+    }
+
     private fun startWireGuard() {
         AppLog.i("ui", "startWireGuard 진입")
         Toast.makeText(this, "startWireGuard", Toast.LENGTH_SHORT).show()
-        val conf = wgConfEt?.text?.toString()?.trim() ?: ""
+        // wgConfPath 파일 우선: EditText가 비어있으면 저장된 파일 사용
+        val savedFile = java.io.File(filesDir, "wg.conf")
+        val conf = (wgConfEt?.text?.toString()?.trim() ?: "").ifEmpty {
+            if (savedFile.exists()) savedFile.readText().trim() else ""
+        }
         if (conf.isEmpty() || !conf.contains("[Interface]") || !conf.contains("[Peer]")) {
             Toast.makeText(this, "client.conf 전체를 붙여넣으세요", Toast.LENGTH_SHORT).show()
             return
@@ -514,6 +556,12 @@ class MainActivity : Activity() {
                 updateStatus("스캔 취소", "QR 스캔이 취소되었습니다.", Color.GRAY)
             } else {
                 handleWifiQr(result.contents)
+            }
+        } else if (requestCode == 102) {
+            if (resultCode == Activity.RESULT_OK && data?.data != null) {
+                loadWgFileToEdit(data.data!!)
+            } else {
+                Toast.makeText(this, "파일 선택 취소", Toast.LENGTH_SHORT).show()
             }
         } else if (requestCode == 101) {
             if (resultCode == Activity.RESULT_OK) {
