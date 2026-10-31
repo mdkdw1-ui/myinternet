@@ -371,6 +371,8 @@ class MainActivity : Activity() {
     // ★ 안전한 클라이언트 종료
 
     private fun startWireGuard() {
+        AppLog.i("ui", "startWireGuard 진입")
+        Toast.makeText(this, "startWireGuard", Toast.LENGTH_SHORT).show()
         val conf = wgConfEt?.text?.toString()?.trim() ?: ""
         if (conf.isEmpty() || !conf.contains("[Interface]") || !conf.contains("[Peer]")) {
             Toast.makeText(this, "client.conf 전체를 붙여넣으세요", Toast.LENGTH_SHORT).show()
@@ -406,8 +408,12 @@ class MainActivity : Activity() {
     }
 
     private fun reallyStartWg(confPath: String) {
+        AppLog.i("ui", "reallyStartWg 호출 path=$confPath")
+        Toast.makeText(this, "reallyStartWg", Toast.LENGTH_SHORT).show()
         try {
-            startService(Intent(this, WireGuardService::class.java).setAction("start").putExtra("confPath", confPath))
+            val i = Intent(this, WireGuardService::class.java).setAction("start").putExtra("confPath", confPath)
+            val ok = startService(i)
+            AppLog.i("ui", "startService 반환=$ok")
             isWgMode = true
             updateStatus("WireGuard 연결됨", "client.conf 적용", Color.parseColor("#6A1B9A"))
             refresh()

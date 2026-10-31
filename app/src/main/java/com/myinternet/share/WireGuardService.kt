@@ -16,6 +16,7 @@ class WireGuardService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        AppLog.i("wg", "onStartCommand 진입 action=${intent?.action} confPath=${intent?.getStringExtra("confPath")}")
         when (intent?.action) {
             "start" -> {
                 val confPath = intent.getStringExtra("confPath")
@@ -33,6 +34,7 @@ class WireGuardService : Service() {
     }
 
     private fun startWg(confPath: String) {
+        AppLog.i("wg", "startWg 진입 confPath=$confPath")
         try {
             val f = File(confPath)
             if (!f.exists()) {
