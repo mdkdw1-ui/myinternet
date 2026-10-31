@@ -2,6 +2,7 @@ package com.myinternet.share
 
 import android.app.Service
 import android.content.Intent
+import android.net.VpnService
 import android.os.IBinder
 import com.wireguard.android.backend.Backend
 import com.wireguard.android.backend.GoBackend
@@ -9,7 +10,7 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
 import java.io.File
 
-class WireGuardService : Service() {
+class WireGuardService : VpnService() {
     private var backend: Backend? = null
     private var tunnel: Tunnel? = null
 
