@@ -181,6 +181,7 @@ class MainActivity : Activity() {
             text = "WireGuard ON"; textSize = 15f
             setBackgroundColor(Color.parseColor("#6A1B9A")); setTextColor(Color.WHITE)
             setOnClickListener { startWireGuard() }
+        }
         val wgFileBtn = Button(this).apply {
             text = "client.conf 파일 선택"
             textSize = 13f
@@ -200,7 +201,7 @@ class MainActivity : Activity() {
             }
         }
         root.addView(wgFileBtn, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, 8) })
-        }
+
         btnWgStop = Button(this).apply {
             text = "WireGuard OFF"; textSize = 15f
             setBackgroundColor(Color.parseColor("#4A148C")); setTextColor(Color.WHITE)
