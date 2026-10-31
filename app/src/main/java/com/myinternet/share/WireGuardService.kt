@@ -40,7 +40,7 @@ class WireGuardService : Service() {
                 stopSelf()
                 return
             }
-            val cfg = Config.parse(f)
+            val cfg = f.inputStream().use { Config.parse(it) }
             backend = GoBackend(this)
             tunnel = object : Tunnel {
                 override fun getName() = "myinternet-wg"
