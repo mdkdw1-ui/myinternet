@@ -370,6 +370,14 @@ class MainActivity : Activity() {
 
     // ★ 안전한 클라이언트 종료
 
+    private fun setBtnEnabled(btn: Button?, enabled: Boolean, color: Int) {
+        btn?.let {
+            it.isEnabled = enabled
+            it.alpha = if (enabled) 1f else 0.4f
+            it.setBackgroundColor(if (enabled) color else Color.parseColor("#B0B0B0"))
+        }
+    }
+
     private fun startWireGuard() {
         AppLog.i("ui", "startWireGuard 진입")
         Toast.makeText(this, "startWireGuard", Toast.LENGTH_SHORT).show()
@@ -533,24 +541,28 @@ class MainActivity : Activity() {
         if (ServerService.running) {
             btnServer.text = "서버 중지"; btnServer.setBackgroundColor(Color.parseColor("#C62828"))
         } else {
-            btnServer.text = "서버 시작\n(데이터 폰)"; btnServer.setBackgroundColor(Color.parseColor("#1565C0"))
+            btnServer.text = "서버 시작
+(데이터 폰)"; btnServer.setBackgroundColor(Color.parseColor("#1565C0"))
         }
-        btnWg?.isEnabled = !isClientMode && !isWgMode
-        btnWgStop?.isEnabled = isWgMode
+
+        // 상호 배제 + 흑백 처리
+        val wgBtnEnabled = !isClientMode && !isWgMode
+        setBtnEnabled(btnWg, wgBtnEnabled, Color.parseColor("#6A1B9A"))
+        setBtnEnabled(btnWgStop, isWgMode, Color.parseColor("#4A148C"))
+
         if (isWgMode) {
-            btnClient.isEnabled = false
-            btnDisconnect.isEnabled = false
-        } else if (!isClientMode) {
-            btnClient.isEnabled = true
-        }
-        if (isClientMode) {
-            btnClient.text = "수동 연결\n(연결됨)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
-            btnClient.isEnabled = false // 이미 연결됐으니 비활성화
-            btnDisconnect.isEnabled = true // 해제 버튼 활성화
+            setBtnEnabled(btnClient, false, Color.parseColor("#2E7D32"))
+            setBtnEnabled(btnDisconnect, false, Color.parseColor("#D32F2F"))
+        } else if (isClientMode) {
+            btnClient.text = "수동 연결
+(연결됨)"
+            setBtnEnabled(btnClient, false, Color.parseColor("#2E7D32"))
+            setBtnEnabled(btnDisconnect, true, Color.parseColor("#D32F2F"))
         } else {
-            btnClient.text = "수동 연결\n(IP 입력)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
-            btnClient.isEnabled = true
-            btnDisconnect.isEnabled = false // 연결 안 됐을 때 해제 버튼 비활성화
+            btnClient.text = "수동 연결
+(IP 입력)"
+            setBtnEnabled(btnClient, true, Color.parseColor("#2E7D32"))
+            setBtnEnabled(btnDisconnect, false, Color.parseColor("#D32F2F"))
         }
     }
 
