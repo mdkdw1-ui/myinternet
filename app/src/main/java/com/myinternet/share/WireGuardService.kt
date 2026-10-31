@@ -2,7 +2,6 @@ package com.myinternet.share
 
 import android.app.Service
 import android.content.Intent
-import android.net.VpnService
 import android.os.IBinder
 import com.wireguard.android.backend.Backend
 import com.wireguard.android.backend.GoBackend
@@ -10,7 +9,7 @@ import com.wireguard.android.backend.Tunnel
 import com.wireguard.config.Config
 import java.io.File
 
-class WireGuardService : VpnService() {
+class WireGuardService : android.app.Service() {
     private var backend: Backend? = null
     private var tunnel: Tunnel? = null
 
@@ -51,9 +50,17 @@ class WireGuardService : VpnService() {
                     AppLog.i("wg", "state=$newState")
                 }
             }
-            backend?.setState(tunnel, Tunnel.State.UP, cfg)
-            running = true
-            AppLog.i("wg", "WireGuard UP")
+            // 별도 스레드에서 setState (2초 블로킹 방지)
+            Thread {
+                try {
+                    backend?.setState(tunnel, Tunnel.State.UP, cfg)
+                    running = true
+                    AppLog.i("wg", "WireGuard UP")
+                } catch (t: Throwable) {
+                    AppLog.e("wg", "WireGuard 시작 실패 (스레드)", t)
+                    running = false
+                }
+            }.start()
         } catch (t: Throwable) {
             AppLog.e("wg", "WireGuard 시작 실패", t)
             running = false

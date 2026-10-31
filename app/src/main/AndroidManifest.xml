@@ -33,14 +33,7 @@
         <service android:name=".VpnClientService" android:process=":vpn" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter><action android:name="android.net.VpnService" /></intent-filter>
         </service>
-        <service
-            android:name=".WireGuardService"
-            android:permission="android.permission.BIND_VPN_SERVICE"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="android.net.VpnService" />
-            </intent-filter>
-        </service>
+        <service android:name=".WireGuardService" android:exported="false" />
         <service android:name="com.wireguard.android.backend.GoBackend$VpnService"
         android:permission="android.permission.BIND_VPN_SERVICE"
         android:exported="true"
