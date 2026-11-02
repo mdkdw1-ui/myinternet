@@ -428,10 +428,28 @@ class MainActivity : Activity() {
 
     private fun reallyStartWg(confPath: String) {
         try {
-            startService(Intent(this, WireGuardService::class.java).setAction("start").putExtra("confPath", confPath))
+            val f = java.io.File(confPath)
+            if (!f.exists() || f.length() < 50) {
+                Toast.makeText(this, "conf 파일이 비어있습니다", Toast.LENGTH_LONG).show()
+                return
+            }
+            startService(Intent(this, WireGuardService::class.java)
+                .setAction("start")
+                .putExtra("confPath", confPath))
             isWgMode = true
-            updateStatus("WireGuard 연결됨", "client.conf 적용", Color.parseColor("#6A1B9A"))
+            updateStatus("WireGuard 연결 중...", "핸드셰이크 대기", Color.parseColor("#F57C00"))
             refresh()
+
+            // 3초 후 실제 연결 상태 확인
+            uiHandler.postDelayed({
+                if (WireGuardService.running) {
+                    updateStatus("WireGuard 연결됨", "client.conf 적용", Color.parseColor("#6A1B9A"))
+                } else {
+                    updateStatus("WireGuard 실패", "로그 확인 필요", Color.RED)
+                    isWgMode = false
+                }
+                refresh()
+            }, 3000)
         } catch (t: Throwable) {
             AppLog.e("ui", "WireGuard 서비스 시작 실패", t)
             Toast.makeText(this, "서비스 시작 실패: ${t.message}", Toast.LENGTH_LONG).show()
@@ -449,34 +467,34 @@ class MainActivity : Activity() {
 
     private fun stopClientSafely() {
         try {
-            // 1. 서비스 종료 명령
             startService(Intent(this, VpnClientService::class.java).setAction("stop"))
-            
-            // 2. 네트워크 바인딩 해제 (다른 와이파이 사용 가능하게)
+
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
             try {
-                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
                 cm.bindProcessToNetwork(null)
-                AppLog.i("ui", "bindProcessToNetwork(null) 해제 완료")
-            } catch (t: Throwable) {
-                AppLog.e("ui", "네트워크 바인딩 해제 실패", t)
-            }
-            
-            // 3. 와이파이 콜백 해제
+                AppLog.i("ui", "bindProcessToNetwork(null) 완료")
+            } catch (t: Throwable) { AppLog.e("ui", "바인딩 해제 실패", t) }
+
             wifiCallback?.let {
                 try {
-                    val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
                     cm.unregisterNetworkCallback(it)
                     AppLog.i("ui", "NetworkCallback 해제 완료")
-                } catch (_: Throwable) {}
+                } catch (t: Throwable) { AppLog.e("ui", "Callback 해제 실패", t) }
             }
             wifiCallback = null
             pendingNetwork = null
-            
-            // 4. UI 상태 변경
+
+            // Note20 네트워크 초기화 대응: Wi-Fi 재활성화 유도
+            try {
+                val wm = getSystemService(WIFI_SERVICE) as WifiManager
+                @Suppress("DEPRECATION")
+                if (!wm.isWifiEnabled) wm.isWifiEnabled = true
+            } catch (_: Throwable) {}
+
             isClientMode = false
-            updateStatus("대기 중", "VPN 연결 해제됨", Color.parseColor("#333333"))
+            updateStatus("대기 중", "VPN 연결 해제됨\n다른 Wi-Fi는 설정에서 선택하세요", Color.parseColor("#455A64"))
             refresh()
-            Toast.makeText(this, "VPN 연결이 안전하게 해제되었습니다.", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "VPN 해제 완료. 다른 Wi-Fi는 설정에서 선택하세요.", Toast.LENGTH_LONG).show()
         } catch (t: Throwable) {
             AppLog.e("ui", "종료 중 오류", t)
         }
@@ -501,7 +519,15 @@ class MainActivity : Activity() {
     }
 
     private fun updateStatus(title: String, desc: String, color: Int) {
-        statusTitle.text = title; statusTitle.setTextColor(color); statusDesc.text = desc
+        val icon = when {
+            title.contains("연결됨") || title.contains("실행 중") -> "●"
+            title.contains("중") -> "◐"
+            title.contains("실패") || title.contains("오류") || title.contains("거부") -> "✕"
+            else -> "○"
+        }
+        statusTitle.text = "$icon $title"
+        statusTitle.setTextColor(color)
+        statusDesc.text = desc
     }
 
     private fun showQr() {

@@ -36,7 +36,6 @@
         <service android:name=".WireGuardService" android:exported="false" />
         <service android:name="com.wireguard.android.backend.GoBackend$VpnService"
         android:permission="android.permission.BIND_VPN_SERVICE"
-        android:exported="true"
-        tools:replace="android:exported" />
+        android:exported="false" />
     </application>
 </manifest>

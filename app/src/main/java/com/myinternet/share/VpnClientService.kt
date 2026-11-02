@@ -21,6 +21,13 @@ class VpnClientService : VpnService() {
         AppLog.i("vpn", "onStartCommand action=${intent?.action} host=${intent?.getStringExtra("host")}")
         if (intent?.action == "stop") {
             stopTunnel()
+            try {
+                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+                cm.bindProcessToNetwork(null)
+                AppLog.i("vpn", "stop: bindProcessToNetwork(null)")
+            } catch (t: Throwable) {
+                AppLog.e("vpn", "stop: bindProcessToNetwork(null) 실패", t)
+            }
             stopSelf()
             return START_NOT_STICKY
         }
@@ -56,7 +63,6 @@ class VpnClientService : VpnService() {
                 .addAddress("198.18.0.1", 32)
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer("198.18.0.2")
-                .addDisallowedApplication(packageName)
                 .establish()
             if (fd == null) {
                 AppLog.e("vpn", "establish() 가 null: VPN 권한이 없거나 다른 VPN이 우선")
