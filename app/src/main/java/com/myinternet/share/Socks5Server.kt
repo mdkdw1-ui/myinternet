@@ -4,13 +4,7 @@ import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
 import java.io.InputStream
 import java.io.OutputStream
-import java.net.DatagramPacket
-import java.net.DatagramSocket
-import java.net.Inet4Address
-import java.net.InetAddress
-import java.net.InetSocketAddress
-import java.net.ServerSocket
-import java.net.Socket
+import java.net.*
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.concurrent.thread
@@ -18,12 +12,15 @@ import kotlin.concurrent.thread
 class Socks5Server(private val port: Int) {
     private var server: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool()
-
-    @Volatile
-    private var running = false
-
-    // ★ 접속자 수 카운터 (UI 표시용)
+    @Volatile private var running = false
     val activeConnections = AtomicInteger(0)
+
+    // ★ 버그 수정 1: DNS 캐시 크기 제한 (최대 1000개 유지)
+    private val dnsCache = object : LinkedHashMap<String, InetAddress>(100, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, InetAddress>?): Boolean {
+            return size > 1000
+        }
+    }
 
     fun start() {
         running = true
@@ -47,7 +44,6 @@ class Socks5Server(private val port: Int) {
 
     fun stop() {
         running = false
-        AppLog.i("srv", "SOCKS5 서버 중지")
         try { server?.close() } catch (_: Exception) {}
         server = null
     }
@@ -99,10 +95,7 @@ class Socks5Server(private val port: Int) {
         InetAddress.getAllByName(host).sortedBy { if (it is Inet4Address) 0 else 1 }
 
     private fun tcpConnect(c: Socket, i: InputStream, o: OutputStream, host: String, dport: Int) {
-        if (host.startsWith("198.18.")) {
-            reply(o, 5)
-            return
-        }
+        if (host.startsWith("198.18.")) { reply(o, 5); return }
         var r: Socket? = null
         var err: Exception? = null
         try {
@@ -110,21 +103,18 @@ class Socks5Server(private val port: Int) {
                 val s = Socket()
                 try {
                     s.connect(InetSocketAddress(a, dport), if (a is Inet4Address) 7000 else 3000)
-                    r = s
-                    break
+                    r = s; break
                 } catch (e: Exception) {
                     err = e
                     try { s.close() } catch (_: Exception) {}
                 }
             }
-        } catch (e: Exception) {
-            err = e
-        }
+        } catch (e: Exception) { err = e }
+        
         val rs = r
         if (rs == null) {
-            AppLog.e("srv", "CONNECT 실패 $host:$dport ${err?.javaClass?.simpleName} ${err?.message}")
-            reply(o, 5)
-            return
+            AppLog.e("srv", "CONNECT 실패 $host:$dport ${err?.javaClass?.simpleName}")
+            reply(o, 5); return
         }
         rs.tcpNoDelay = true
         reply(o, 0)
@@ -138,13 +128,11 @@ class Socks5Server(private val port: Int) {
         try { rs.close() } catch (_: Exception) {}
     }
 
-    private val dnsCache = java.util.concurrent.ConcurrentHashMap<String, InetAddress>()
-
     private fun udpAssociate(c: Socket, i: InputStream, o: OutputStream) {
         val us = DatagramSocket(0)
-        try { us.receiveBufferSize = 4 shl 20 } catch (_: Exception) {}
-        try { us.sendBufferSize = 4 shl 20 } catch (_: Exception) {}
-        try { us.trafficClass = 0xB8 } catch (_: Exception) {}
+        // ★ 버그 수정 2: 60초 동안 패킷이 없으면 소켓을 자동으로 닫아 좀비 소켓 방지
+        try { us.soTimeout = 60000 } catch (_: Exception) {}
+
         val bnd = if (c.localAddress is Inet4Address) ByteArray(4) else ByteArray(16)
         val rep = ByteArrayOutputStream()
         rep.write(byteArrayOf(5, 0, 0, if (bnd.size == 4) 1 else 4))
@@ -155,20 +143,25 @@ class Socks5Server(private val port: Int) {
         o.flush()
 
         val clientAddr: InetAddress = c.inetAddress
-        AppLog.i("srv", "UDP ASSOCIATE ${clientAddr.hostAddress} 중계포트 ${us.localPort}")
         thread(isDaemon = true) {
-            android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_URGENT_DISPLAY)
             val hdr = 22
             val buf = ByteArray(65535 + hdr)
             val p = DatagramPacket(buf, hdr, buf.size - hdr)
             val sp = DatagramPacket(buf, 0)
             var clientPort = -1
-            var outN = 0L
-            var inN = 0L
+            var lastActive = System.currentTimeMillis()
             try {
                 while (true) {
                     p.setData(buf, hdr, buf.size - hdr)
-                    us.receive(p)
+                    try {
+                        us.receive(p)
+                        lastActive = System.currentTimeMillis()
+                    } catch (e: SocketTimeoutException) {
+                        // 60초 동안 패킷이 없으면 루프 종료 및 소켓 회수
+                        if (System.currentTimeMillis() - lastActive > 60000) break
+                        continue
+                    }
+                    
                     val len = p.length
                     if (p.address == clientAddr && (clientPort == -1 || p.port == clientPort)) {
                         clientPort = p.port
@@ -183,10 +176,8 @@ class Socks5Server(private val port: Int) {
                                 val h = String(buf, idx, l)
                                 idx += l
                                 try {
-                                    dnsCache.getOrPut(h) { resolve(h).first() }
-                                } catch (e: Exception) {
-                                    continue
-                                }
+                                    synchronized(dnsCache) { dnsCache.getOrPut(h) { resolve(h).first() } }
+                                } catch (e: Exception) { continue }
                             }
                             else -> continue
                         }
@@ -196,15 +187,11 @@ class Socks5Server(private val port: Int) {
                         sp.address = dst
                         sp.port = dp
                         us.send(sp)
-                        outN++
-                        if (outN == 1L) AppLog.i("srv", "UDP 첫 패킷 -> ${dst.hostAddress}:$dp")
                     } else if (clientPort != -1) {
                         val a = p.address.address
                         val hl = 4 + a.size + 2
                         val st = hdr - hl
-                        buf[st] = 0
-                        buf[st + 1] = 0
-                        buf[st + 2] = 0
+                        buf[st] = 0; buf[st + 1] = 0; buf[st + 2] = 0
                         buf[st + 3] = (if (a.size == 4) 1 else 4).toByte()
                         System.arraycopy(a, 0, buf, st + 4, a.size)
                         buf[st + 4 + a.size] = (p.port ushr 8).toByte()
@@ -213,15 +200,14 @@ class Socks5Server(private val port: Int) {
                         sp.address = clientAddr
                         sp.port = clientPort
                         us.send(sp)
-                        inN++
                     }
                 }
-            } catch (e: Exception) {
-                AppLog.i("srv", "UDP 종료 out=$outN in=$inN (${e.javaClass.simpleName})")
+            } catch (_: Exception) {
+            } finally {
+                try { us.close() } catch (_: Exception) {}
             }
         }
 
         try { while (i.read() >= 0) { } } catch (_: Exception) {}
-        us.close()
     }
 }

@@ -1,6 +1,10 @@
 package com.myinternet.share
 
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.VpnService
@@ -18,58 +22,66 @@ class VpnClientService : VpnService() {
     private var started = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        AppLog.i("vpn", "onStartCommand action=${intent?.action} host=${intent?.getStringExtra("host")}")
         if (intent?.action == "stop") {
             stopTunnel()
-            try {
-                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-                cm.bindProcessToNetwork(null)
-                AppLog.i("vpn", "stop: bindProcessToNetwork(null)")
-            } catch (t: Throwable) {
-                AppLog.e("vpn", "stop: bindProcessToNetwork(null) 실패", t)
-            }
             stopSelf()
             return START_NOT_STICKY
         }
         val host = intent?.getStringExtra("host") ?: return START_NOT_STICKY
         
-        // ★★★ VPN 프로세스도 Wi-Fi 네트워크를 쓰도록 바인딩 (핵심 수정) ★★★
+        // ★ 버그 수정 3: Foreground Service 등록 (안드로이드가 죽이지 못하게 함)
+        createNotificationChannel()
+        val notification = Notification.Builder(this, "vpn_channel")
+            .setContentTitle("MyInternet VPN 연결됨")
+            .setContentText("서버 $host 로 우회 중")
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .build()
+            
+        if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(2, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else {
+            startForeground(2, notification)
+        }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             val network = intent.getParcelableExtra<Network>("network")
             if (network != null) {
                 try {
                     val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
                     cm.bindProcessToNetwork(network)
-                    AppLog.i("vpn", "VPN 프로세스가 Wi-Fi 네트워크에 바인딩됨: $network")
-                } catch (t: Throwable) {
-                    AppLog.e("vpn", "VPN 프로세스 네트워크 바인딩 실패", t)
-                }
+                } catch (_: Throwable) {}
             }
         }
 
         startTunnel(host)
-        return START_NOT_STICKY
+        return START_STICKY // ★ OS에 의해 죽으면 자동 재시작
+    }
+
+    private fun createNotificationChannel() {
+        val nm = getSystemService(NotificationManager::class.java)
+        nm.createNotificationChannel(
+            NotificationChannel("vpn_channel", "VPN 상태", NotificationManager.IMPORTANCE_LOW)
+        )
     }
 
     private fun startTunnel(host: String) {
         stopTunnel()
         try {
-            AppLog.i("vpn", "native 로드 시도")
             Class.forName("hev.htproxy.TProxyService")
-            AppLog.i("vpn", "native 로드 OK")
             val fd = Builder()
                 .setSession("MyInternet")
                 .setMtu(1500)
                 .addAddress("198.18.0.1", 32)
                 .addRoute("0.0.0.0", 0)
                 .addDnsServer("198.18.0.2")
+                .addDisallowedApplication(packageName)
                 .establish()
             if (fd == null) {
-                AppLog.e("vpn", "establish() 가 null: VPN 권한이 없거나 다른 VPN이 우선")
+                AppLog.e("vpn", "establish() null (권한 없음)")
+                stopSelf()
                 return
             }
             pfd = fd
-            AppLog.i("vpn", "TUN 생성 fd=${fd.fd}")
 
             try {
                 val wm = applicationContext.getSystemService(WIFI_SERVICE) as WifiManager
@@ -77,12 +89,9 @@ class VpnClientService : VpnService() {
                 val mode = if (Build.VERSION.SDK_INT >= 29) WifiManager.WIFI_MODE_FULL_LOW_LATENCY
                            else WifiManager.WIFI_MODE_FULL_HIGH_PERF
                 wifiLock = wm.createWifiLock(mode, "myinternet").apply { setReferenceCounted(false); acquire() }
-            } catch (t: Throwable) {
-                AppLog.e("vpn", "Wi-Fi 락 실패", t)
-            }
+            } catch (_: Throwable) {}
 
             val logFile = File(filesDir, "hev.log")
-            logFile.delete()
             val cfg = File(filesDir, "hev.yml")
             cfg.writeText(
                 """
@@ -105,7 +114,6 @@ class VpnClientService : VpnService() {
                   log-level: warn
                 """.trimIndent() + "\n"
             )
-            AppLog.i("vpn", "hev 설정:\n" + cfg.readText())
             val r = TProxyService.TProxyStartService(cfg.absolutePath, fd.fd)
             started = true
             AppLog.i("vpn", "TProxyStartService 반환: $r")
@@ -113,6 +121,7 @@ class VpnClientService : VpnService() {
         } catch (t: Throwable) {
             AppLog.e("vpn", "터널 시작 실패", t)
             stopTunnel()
+            stopSelf()
         }
     }
 
@@ -126,10 +135,7 @@ class VpnClientService : VpnService() {
                         AppLog.i("hev", "통계 tx=${s[0]}pkt/${s[1]}B rx=${s[2]}pkt/${s[3]}B")
                     }
                 }
-            } catch (_: InterruptedException) {
-            } catch (t: Throwable) {
-                AppLog.e("hev", "통계 오류", t)
-            }
+            } catch (_: InterruptedException) {} catch (t: Throwable) {}
         }
     }
 
@@ -147,7 +153,6 @@ class VpnClientService : VpnService() {
     }
 
     override fun onRevoke() {
-        AppLog.i("vpn", "onRevoke")
         stopTunnel()
         stopSelf()
     }

@@ -314,6 +314,7 @@ class MainActivity : Activity() {
                     .addTransportType(NetworkCapabilities.TRANSPORT_WIFI).setNetworkSpecifier(specifier).build()
                 val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
+                wifiCallback?.let { try { (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(it) } catch (_: Throwable) {} }
                 wifiCallback = object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: android.net.Network) {
                         runOnUiThread {
