@@ -111,8 +111,13 @@ class Socks5Server(private val port: Int) {
         if (host.startsWith("198.18.")) { reply(o, 5); return }
         var r: Socket? = null
         var err: Exception? = null
+        val startTime = System.currentTimeMillis() // ★ 전체 타임아웃 추적
         try {
             for (a in resolve(host).take(3)) {
+                if (System.currentTimeMillis() - startTime > 15000) {
+                    err = Exception("전체 타임아웃 15초 초과")
+                    break
+                }
                 val s = Socket()
                 try {
                     s.connect(InetSocketAddress(a, dport), if (a is Inet4Address) 7000 else 3000)

@@ -35,6 +35,7 @@ class VpnClientService : VpnService() {
             .setContentTitle("MyInternet VPN 연결됨")
             .setContentText("서버 $host 로 우회 중")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setOngoing(true)
             .build()
             
         if (Build.VERSION.SDK_INT >= 29) {
@@ -115,6 +116,13 @@ class VpnClientService : VpnService() {
                 """.trimIndent() + "\n"
             )
             val r = TProxyService.TProxyStartService(cfg.absolutePath, fd.fd)
+            if (!r) {
+                AppLog.e("vpn", "TProxyStartService 실패! 터널 종료")
+                try { pfd?.close() } catch (_: Exception) {}
+                pfd = null
+                stopSelf()
+                return
+            }
             started = true
             AppLog.i("vpn", "TProxyStartService 반환: $r")
             startStats()

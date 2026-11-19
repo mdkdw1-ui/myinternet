@@ -54,6 +54,8 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // ★ 프로세스 재시작 시 UI 상태 복원
+        isClientMode = getSharedPreferences("ui_state", MODE_PRIVATE).getBoolean("is_client", false)
         requestNecessaryPermissions()
         buildPremiumUI()
         startStatsUpdater()
@@ -278,6 +280,10 @@ class MainActivity : Activity() {
     }
 
     private fun startQrScanLegacy() {
+        if (isClientMode) {
+            Toast.makeText(this, "VPN 연결 중에는 QR 스캔 불가. 먼저 연결 해제하세요.", Toast.LENGTH_SHORT).show()
+            return
+        }
         val integrator = IntentIntegrator(this)
         integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
         integrator.setPrompt("서버 폰의 Wi-Fi QR 코드를 스캔하세요")
@@ -516,6 +522,7 @@ class MainActivity : Activity() {
             pendingNetwork?.let { intent.putExtra("network", it) }
             startService(intent)
             isClientMode = true
+            getSharedPreferences("ui_state", MODE_PRIVATE).edit().putBoolean("is_client", true).apply()
             lastTx = 0; lastRx = 0
             updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
             refresh()
