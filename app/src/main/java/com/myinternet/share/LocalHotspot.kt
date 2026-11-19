@@ -17,12 +17,13 @@ object LocalHotspot {
 
     @SuppressLint("MissingPermission")
     @Suppress("DEPRECATION")
-    fun start(ctx: Context, onDone: (Boolean) -> Unit) {
+    fun start(context: Context, onDone: (Boolean) -> Unit) {
+        val ctx = context.applicationContext // ★ 액티비티가 아닌 앱 컨텍스트 사용
         if (reservation != null) {
             onDone(true)
             return
         }
-        val wm = ctx.applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        val wm = ctx.getSystemService(Context.WIFI_SERVICE) as WifiManager
         state = "시작 중"
         try {
             wm.startLocalOnlyHotspot(object : WifiManager.LocalOnlyHotspotCallback() {
@@ -44,7 +45,7 @@ object LocalHotspot {
                     }
                     state = "실행 중"
                     AppLog.i("hotspot", "로컬 핫스팟 시작 ssid=$ssid")
-                    onDone(true)
+                    Handler(Looper.getMainLooper()).post { onDone(true) } // ★ 메인 스레드에서 안전하게 콜백
                 }
 
                 override fun onStopped() {
@@ -56,8 +57,8 @@ object LocalHotspot {
                 override fun onFailed(reason: Int) {
                     reservation = null
                     state = "실패(코드 $reason)"
-                    AppLog.e("hotspot", "로컬 핫스팟 실패 reason=$reason (1=채널없음 2=호환안됨 3=테더링금지)")
-                    onDone(false)
+                    AppLog.e("hotspot", "로컬 핫스팟 실패 reason=$reason")
+                    Handler(Looper.getMainLooper()).post { onDone(false) }
                 }
             }, Handler(Looper.getMainLooper()))
         } catch (t: Throwable) {

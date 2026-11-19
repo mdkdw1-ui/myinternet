@@ -39,6 +39,7 @@ class MainActivity : Activity() {
     
     private var lastQr = ""
     private var isClientMode = false
+    private var isConnecting = false // ★ 연타 방지용
     private var isWgMode = false
     private var btnWg: Button? = null
     private var wgConfEt: EditText? = null
@@ -502,6 +503,7 @@ class MainActivity : Activity() {
     }
 
     private fun requestVpnPermissionAndStart(host: String) {
+        isConnecting = true
         val prep = VpnService.prepare(this)
         if (prep != null) { pendingHost = host; @Suppress("DEPRECATION") startActivityForResult(prep, 100) }
         else startVpn(host)
@@ -574,6 +576,7 @@ class MainActivity : Activity() {
                 reallyStartWg(f.absolutePath)
             } else updateStatus("권한 거부", "WireGuard VPN 권한 필요", Color.RED)
         } else if (requestCode == 100) {
+            isConnecting = false // ★ 락 해제
             if (resultCode == Activity.RESULT_OK) startVpn(pendingHost)
             else updateStatus("권한 거부", "VPN 필요", Color.RED)
         } else {

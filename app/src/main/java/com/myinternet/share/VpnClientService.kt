@@ -159,6 +159,13 @@ class VpnClientService : VpnService() {
 
     override fun onDestroy() {
         stopTunnel()
+        // ★ 유령 알림 방지: 서비스가 죽으면 알림창에서도 확실히 제거
+        if (Build.VERSION.SDK_INT >= 24) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
         super.onDestroy()
     }
 }

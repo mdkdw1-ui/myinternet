@@ -52,6 +52,9 @@ class Socks5Server(private val port: Int) {
         activeConnections.incrementAndGet()
         try {
             c.tcpNoDelay = true
+            // ★ DoS 방어: 10초 내에 데이터를 안 보내면 연결 강제 종료
+            c.soTimeout = 10000 
+
             val i = DataInputStream(c.getInputStream())
             val o = c.getOutputStream()
 
@@ -72,6 +75,9 @@ class Socks5Server(private val port: Int) {
                 else -> return
             }
             val dport = i.readUnsignedShort()
+            
+            // 핸드셰이크 완료 후에는 타임아웃 해제
+            c.soTimeout = 0 
 
             when (cmd) {
                 1 -> tcpConnect(c, i, o, host, dport)
