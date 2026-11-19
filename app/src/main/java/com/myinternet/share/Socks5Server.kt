@@ -145,7 +145,7 @@ class Socks5Server(private val port: Int) {
         try { us.receiveBufferSize = 4 shl 20 } catch (_: Exception) {}
         try { us.sendBufferSize = 4 shl 20 } catch (_: Exception) {}
         try { us.trafficClass = 0xB8 } catch (_: Exception) {}
-        val bnd = c.localAddress.address
+        val bnd = if (c.localAddress is Inet4Address) ByteArray(4) else ByteArray(16)
         val rep = ByteArrayOutputStream()
         rep.write(byteArrayOf(5, 0, 0, if (bnd.size == 4) 1 else 4))
         rep.write(bnd)
