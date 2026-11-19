@@ -323,6 +323,7 @@ class MainActivity : Activity() {
                             pendingNetwork = network
                             updateStatus("Wi-Fi 연결됨", "IP 확인 중...", Color.parseColor("#2E7D32"))
                             statusDesc.postDelayed({
+                                if (isFinishing || isDestroyed) return@postDelayed // ★ Activity 파괴 확인
                                 val host = NetUtil.serverHostFromNetwork(this@MainActivity, network)
                                 hostEt.setText(host)
                                 AppLog.i("ui", "QR 자동 IP = $host")
@@ -589,7 +590,11 @@ class MainActivity : Activity() {
         Toast.makeText(this, "테스트 중...", Toast.LENGTH_SHORT).show()
         Thread {
             val msg = "대상: $host\nTCP: ${Socks5Test.tcp(host, ServerService.PORT)}\nUDP: ${Socks5Test.udp(host, ServerService.PORT)}"
-            runOnUiThread { AlertDialog.Builder(this).setTitle("결과").setMessage(msg).setPositiveButton("확인", null).show() }
+            runOnUiThread { 
+                if (!isFinishing && !isDestroyed) {
+                    AlertDialog.Builder(this).setTitle("결과").setMessage(msg).setPositiveButton("확인", null).show() 
+                }
+            }
         }.start()
     }
 

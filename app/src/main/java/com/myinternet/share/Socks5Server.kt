@@ -12,6 +12,7 @@ import kotlin.concurrent.thread
 class Socks5Server(private val port: Int) {
     private var server: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool()
+    private val connectionLimit = java.util.concurrent.Semaphore(200) // ★ 최대 200개 연결 제한
     @Volatile private var running = false
     val activeConnections = AtomicInteger(0)
 
@@ -49,6 +50,11 @@ class Socks5Server(private val port: Int) {
     }
 
     private fun handle(c: Socket) {
+        if (!connectionLimit.tryAcquire()) {
+            AppLog.e("srv", "연결 거부: 최대 접속자 수(200) 초과")
+            try { c.close() } catch (_: Exception) {}
+            return
+        }
         activeConnections.incrementAndGet()
         try {
             c.tcpNoDelay = true
@@ -89,6 +95,7 @@ class Socks5Server(private val port: Int) {
         } finally {
             activeConnections.decrementAndGet()
             try { c.close() } catch (_: Exception) {}
+            connectionLimit.release() // ★ 세마포어 반환
         }
     }
 

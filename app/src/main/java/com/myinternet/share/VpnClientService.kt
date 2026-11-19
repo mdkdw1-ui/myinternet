@@ -145,6 +145,8 @@ class VpnClientService : VpnService() {
         if (started) {
             started = false
             try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
+            // ★ 네이티브 라이브러리가 FD를 안전하게 반환할 시간을 줌 (SIGSEGV 방지)
+            try { Thread.sleep(200) } catch (_: Exception) {}
         }
         try { pfd?.close() } catch (_: Exception) {}
         pfd = null

@@ -16,6 +16,7 @@ class LogActivity : Activity() {
     private lateinit var tv: TextView
     private lateinit var scroll: ScrollView
     private var text = ""
+    private var isLoading = false // ★ 연타 방지 플래그
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,6 +50,8 @@ class LogActivity : Activity() {
     }
 
     private fun load() {
+        if (isLoading) return // ★ 이미 로딩 중이면 무시
+        isLoading = true
         tv.text = "불러오는 중..."
         Thread {
             val sb = StringBuilder()
@@ -58,8 +61,11 @@ class LogActivity : Activity() {
             sb.append("\n=== logcat (이 앱) ===\n").append(AppLog.readLogcat())
             text = sb.toString().takeLast(200_000)
             runOnUiThread {
-                tv.text = text
-                scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+                if (!isFinishing && !isDestroyed) {
+                    tv.text = text
+                    scroll.post { scroll.fullScroll(ScrollView.FOCUS_DOWN) }
+                }
+                isLoading = false // ★ 로딩 완료
             }
         }.start()
     }
