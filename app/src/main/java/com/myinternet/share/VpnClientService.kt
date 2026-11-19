@@ -71,14 +71,34 @@ class VpnClientService : VpnService() {
         stopTunnel()
         try {
             Class.forName("hev.htproxy.TProxyService")
-            val fd = Builder()
+            val builder = Builder()
                 .setSession("MyInternet")
                 .setMtu(1500)
                 .addAddress("198.18.0.1", 32)
-                .addRoute("0.0.0.0", 0)
                 .addDnsServer("198.18.0.2")
                 .addDisallowedApplication(packageName)
-                .establish()
+            
+            // ★ 핫스팟/로컬 IP 대역을 VPN 라우팅에서 제외 (0.0.0.0/0 대신 사설 IP 제외)
+            // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 을 제외한 모든 IP를 VPN으로 라우팅
+            val localCidrs = listOf("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
+            
+            // 전체 IP 대역(0.0.0.0/0)을 여러 조각으로 나누어 사설 IP만 제외
+            for (i in 0..255) {
+                val prefix = "$i.0.0.0/8"
+                if (prefix.startsWith("10.") || prefix.startsWith("172.") || prefix.startsWith("192.")) {
+                    // 사설 IP 대역은 세밀하게 제외
+                    if (prefix.startsWith("172.")) {
+                        for (j in 16..31) builder.addRoute("172.$j.0.0/16", 16)
+                    } else if (prefix.startsWith("192.")) {
+                        for (j in 168..168) builder.addRoute("192.$j.0.0/16", 16)
+                    }
+                    // 10.x.x.x 는 통째로 제외 (continue)
+                } else {
+                    builder.addRoute(prefix, 8)
+                }
+            }
+            
+            val fd = builder.establish()
             if (fd == null) {
                 AppLog.e("vpn", "establish() null (권한 없음)")
                 stopSelf()

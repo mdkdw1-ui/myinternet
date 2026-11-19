@@ -593,13 +593,27 @@ class MainActivity : Activity() {
     }
 
     private fun runTest(host: String) {
-        if (host.isEmpty()) return
+        if (host.isEmpty()) {
+            Toast.makeText(this, "IP를 입력하세요", Toast.LENGTH_SHORT).show()
+            return
+        }
         Toast.makeText(this, "테스트 중...", Toast.LENGTH_SHORT).show()
         Thread {
-            val msg = "대상: $host\nTCP: ${Socks5Test.tcp(host, ServerService.PORT)}\nUDP: ${Socks5Test.udp(host, ServerService.PORT)}"
-            runOnUiThread { 
-                if (!isFinishing && !isDestroyed) {
-                    AlertDialog.Builder(this).setTitle("결과").setMessage(msg).setPositiveButton("확인", null).show() 
+            try {
+                val tcpResult = Socks5Test.tcp(this, host, ServerService.PORT)
+                val udpResult = Socks5Test.udp(this, host, ServerService.PORT)
+                val msg = "대상: $host\nTCP: $tcpResult\nUDP: $udpResult"
+                runOnUiThread { 
+                    if (!isFinishing && !isDestroyed) {
+                        AlertDialog.Builder(this).setTitle("결과").setMessage(msg).setPositiveButton("확인", null).show() 
+                    }
+                }
+            } catch (e: Throwable) {
+                AppLog.e("ui", "테스트 중 크래시 방어", e)
+                runOnUiThread {
+                    if (!isFinishing && !isDestroyed) {
+                        AlertDialog.Builder(this).setTitle("테스트 실패").setMessage("예외 발생: ${e.message}").setPositiveButton("확인", null).show()
+                    }
                 }
             }
         }.start()
