@@ -12,7 +12,8 @@ import kotlin.concurrent.thread
 class Socks5Server(private val port: Int) {
     private var server: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool()
-    private val connectionLimit = java.util.concurrent.Semaphore(200) // ★ 최대 200개 연결 제한
+    private val connectionLimit = java.util.concurrent.Semaphore(200)
+    private val activeSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>() // ★ 활성 소켓 추적
     @Volatile private var running = false
     val activeConnections = AtomicInteger(0)
 
@@ -47,6 +48,13 @@ class Socks5Server(private val port: Int) {
         running = false
         try { server?.close() } catch (_: Exception) {}
         server = null
+        // ★ 모든 활성 소켓 강제 종료 (좀비 스레드 방지)
+        try {
+            for (s in activeSockets) {
+                try { s.close() } catch (_: Exception) {}
+            }
+            activeSockets.clear()
+        } catch (_: Exception) {}
     }
 
     private fun handle(c: Socket) {
@@ -56,6 +64,7 @@ class Socks5Server(private val port: Int) {
             return
         }
         activeConnections.incrementAndGet()
+        activeSockets.add(c) // ★ 추적
         try {
             c.tcpNoDelay = true
             // ★ DoS 방어: 10초 내에 데이터를 안 보내면 연결 강제 종료
@@ -94,8 +103,9 @@ class Socks5Server(private val port: Int) {
             AppLog.e("srv", "세션 예외 ${e.javaClass.simpleName} ${e.message}")
         } finally {
             activeConnections.decrementAndGet()
+            activeSockets.remove(c) // ★ 추적 해제
             try { c.close() } catch (_: Exception) {}
-            connectionLimit.release() // ★ 세마포어 반환
+            connectionLimit.release()
         }
     }
 

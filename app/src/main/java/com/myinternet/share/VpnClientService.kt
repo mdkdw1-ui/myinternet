@@ -45,6 +45,7 @@ class VpnClientService : VpnService() {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            @Suppress("DEPRECATION")
             val network = intent.getParcelableExtra<Network>("network")
             if (network != null) {
                 try {
@@ -65,6 +66,7 @@ class VpnClientService : VpnService() {
         )
     }
 
+    @Synchronized
     private fun startTunnel(host: String) {
         stopTunnel()
         try {
@@ -94,7 +96,7 @@ class VpnClientService : VpnService() {
 
             val logFile = File(filesDir, "hev.log")
             val cfg = File(filesDir, "hev.yml")
-            cfg.writeText(
+            try { cfg.writeText(
                 """
                 tunnel:
                   mtu: 1500
@@ -114,7 +116,11 @@ class VpnClientService : VpnService() {
                   log-file: ${logFile.absolutePath}
                   log-level: warn
                 """.trimIndent() + "\n"
-            )
+            ) } catch (e: Throwable) {
+                AppLog.e("vpn", "hev.yml 쓰기 실패 (저장공간 부족?)", e)
+                stopSelf()
+                return
+            }
             val r = TProxyService.TProxyStartService(cfg.absolutePath, fd.fd)
             if (!r) {
                 AppLog.e("vpn", "TProxyStartService 실패! 터널 종료")
@@ -147,6 +153,7 @@ class VpnClientService : VpnService() {
         }
     }
 
+    @Synchronized
     private fun stopTunnel() {
         statsThread?.interrupt()
         statsThread = null
@@ -154,7 +161,7 @@ class VpnClientService : VpnService() {
             started = false
             try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
             // ★ 네이티브 라이브러리가 FD를 안전하게 반환할 시간을 줌 (SIGSEGV 방지)
-            try { Thread.sleep(200) } catch (_: Exception) {}
+            try { Thread.sleep(300) } catch (_: Exception) {}
         }
         try { pfd?.close() } catch (_: Exception) {}
         pfd = null

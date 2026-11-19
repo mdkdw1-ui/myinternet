@@ -14,10 +14,12 @@ object LocalHotspot {
     @Volatile var pass = ""
     @Volatile var sec = "WPA"
     @Volatile var state = "중지"
+    @Volatile private var onStoppedCallback: (() -> Unit)? = null // ★ UI 갱신용
 
     @SuppressLint("MissingPermission")
     @Suppress("DEPRECATION")
-    fun start(context: Context, onDone: (Boolean) -> Unit) {
+    fun start(context: Context, onStoppedUi: (() -> Unit)? = null, onDone: (Boolean) -> Unit) {
+        onStoppedCallback = onStoppedUi
         val ctx = context.applicationContext // ★ 액티비티가 아닌 앱 컨텍스트 사용
         if (reservation != null) {
             onDone(true)
@@ -51,7 +53,10 @@ object LocalHotspot {
                 override fun onStopped() {
                     reservation = null
                     state = "중지"
+                    ssid = ""
+                    pass = ""
                     AppLog.i("hotspot", "로컬 핫스팟 중지됨")
+                    Handler(Looper.getMainLooper()).post { onStoppedCallback?.invoke() } // ★ UI 갱신
                 }
 
                 override fun onFailed(reason: Int) {

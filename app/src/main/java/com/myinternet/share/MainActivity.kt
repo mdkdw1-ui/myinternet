@@ -364,7 +364,7 @@ class MainActivity : Activity() {
             updateStatus("대기 중", "서버 중지됨", Color.parseColor("#333333"))
         } else {
             updateStatus("서버 시작 중...", "핫스팟 활성화 중", Color.parseColor("#F57C00"))
-            LocalHotspot.start(this) { ok ->
+            LocalHotspot.start(this, onStoppedUi = { runOnUiThread { refresh() } }) { ok ->
                 if (ok) {
                     try {
                         startForegroundService(Intent(this, ServerService::class.java))

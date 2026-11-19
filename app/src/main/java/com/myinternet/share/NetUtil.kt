@@ -48,6 +48,15 @@ object NetUtil {
     } catch (_: Throwable) { "" }
 
     fun serverHost(ctx: Context): String {
+        val result = serverHostInternal(ctx)
+        if (result.isBlank() || !result.matches(Regex("^[0-9.]+$"))) {
+            AppLog.i("net", "serverHost 결과가 비정상($result), fallback 사용")
+            return FALLBACK
+        }
+        return result
+    }
+    
+    private fun serverHostInternal(ctx: Context): String {
         try {
             val cm = ctx.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
             for (n in cm.allNetworks) {

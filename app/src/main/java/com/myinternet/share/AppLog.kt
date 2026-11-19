@@ -13,6 +13,7 @@ object AppLog {
     private const val MAX = 400_000L
     
     // ★ 버그 수정: 파일 I/O를 메인 스레드가 아닌 백그라운드에서 처리
+    private val fileLock = Any() // ★ 파일 동시 접근 방지
     private val ioExecutor = Executors.newSingleThreadExecutor { r ->
         Thread(r, "AppLog-IO").apply { isDaemon = true }
     }
@@ -29,6 +30,7 @@ object AppLog {
         
         // ★ 백그라운드에서 비동기로 쓰기 (UI 블로킹 방지)
         ioExecutor.execute {
+            synchronized(fileLock) {
             try {
                 if (f.length() > MAX) {
                     val txt = f.readText()
@@ -39,6 +41,7 @@ object AppLog {
                 if (trace != null) sb.append(trace).append('\n')
                 f.appendText(sb.toString())
             } catch (_: Exception) {}
+            }
         }
     }
 
@@ -66,12 +69,14 @@ object AppLog {
 
     fun clear(ctx: Context) {
         ioExecutor.execute {
+            synchronized(fileLock) {
             try { File(ctx.filesDir, "app.log").delete() } catch (_: Exception) {}
             try { File(ctx.filesDir, "hev.log").delete() } catch (_: Exception) {}
             try { 
                 val p = Runtime.getRuntime().exec(arrayOf("logcat", "-c"))
                 p.waitFor()
             } catch (_: Exception) {}
+            }
         }
     }
 }
