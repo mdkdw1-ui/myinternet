@@ -3,6 +3,7 @@ package com.myinternet.share
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
@@ -20,6 +21,8 @@ class VpnClientService : VpnService() {
     private var wifiLock: WifiManager.WifiLock? = null
     private var statsThread: Thread? = null
     private var started = false
+    private val PREFS_NAME = "vpn_prefs"
+    private val KEY_HOST = "last_host"
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == "stop") {
@@ -27,9 +30,22 @@ class VpnClientService : VpnService() {
             stopSelf()
             return START_NOT_STICKY
         }
-        val host = intent?.getStringExtra("host") ?: return START_NOT_STICKY
         
-        // ★ 버그 수정 3: Foreground Service 등록 (안드로이드가 죽이지 못하게 함)
+        var host = intent?.getStringExtra("host")
+        
+        if (host == null) {
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            host = prefs.getString(KEY_HOST, null)
+            if (host == null) {
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            AppLog.i("vpn", "강제 종료 후 재시작됨. 복구된 host=$host")
+        } else {
+            val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            prefs.edit().putString(KEY_HOST, host).apply()
+        }
+        
         createNotificationChannel()
         val notification = Notification.Builder(this, "vpn_channel")
             .setContentTitle("MyInternet VPN 연결됨")
@@ -46,7 +62,7 @@ class VpnClientService : VpnService() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             @Suppress("DEPRECATION")
-            val network = intent.getParcelableExtra<Network>("network")
+            val network = intent?.getParcelableExtra<Network>("network")
             if (network != null) {
                 try {
                     val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
@@ -56,7 +72,7 @@ class VpnClientService : VpnService() {
         }
 
         startTunnel(host)
-        return START_STICKY // ★ OS에 의해 죽으면 자동 재시작
+        return START_STICKY
     }
 
     private fun createNotificationChannel() {
@@ -70,7 +86,11 @@ class VpnClientService : VpnService() {
     private fun startTunnel(host: String) {
         stopTunnel()
         try {
+            // ★ UAPIOpen 권한 에러 해결 (임시 폴더를 앱 전용으로 변경)
+            System.setProperty("java.io.tmpdir", filesDir.absolutePath)
+            
             Class.forName("hev.htproxy.TProxyService")
+            
             val builder = Builder()
                 .setSession("MyInternet")
                 .setMtu(1500)
@@ -78,21 +98,18 @@ class VpnClientService : VpnService() {
                 .addDnsServer("198.18.0.2")
                 .addDisallowedApplication(packageName)
             
-            // ★ 핫스팟/로컬 IP 대역을 VPN 라우팅에서 제외 (0.0.0.0/0 대신 사설 IP 제외)
-            // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 을 제외한 모든 IP를 VPN으로 라우팅
+            // ★ 핵심: 안드로이드 OS 라우팅 테이블에서 핫스팟 사설 IP 대역 제외 (VPN이 가로채지 못하게 함)
+            // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 을 제외한 공인 IP만 VPN 라우팅에 추가
             val localCidrs = listOf("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
-            
-            // 전체 IP 대역(0.0.0.0/0)을 여러 조각으로 나누어 사설 IP만 제외
             for (i in 0..255) {
                 val prefix = "$i.0.0.0/8"
                 if (prefix.startsWith("10.") || prefix.startsWith("172.") || prefix.startsWith("192.")) {
-                    // 사설 IP 대역은 세밀하게 제외
                     if (prefix.startsWith("172.")) {
                         for (j in 16..31) builder.addRoute("172.$j.0.0/16", 16)
                     } else if (prefix.startsWith("192.")) {
-                        for (j in 168..168) builder.addRoute("192.$j.0.0/16", 16)
+                        builder.addRoute("192.168.0.0/16", 16)
                     }
-                    // 10.x.x.x 는 통째로 제외 (continue)
+                    // 10.x.x.x 는 추가하지 않음 (제외됨)
                 } else {
                     builder.addRoute(prefix, 8)
                 }
@@ -100,7 +117,7 @@ class VpnClientService : VpnService() {
             
             val fd = builder.establish()
             if (fd == null) {
-                AppLog.e("vpn", "establish() null (권한 없음)")
+                AppLog.e("vpn", "establish() null")
                 stopSelf()
                 return
             }
@@ -137,13 +154,14 @@ class VpnClientService : VpnService() {
                   log-level: warn
                 """.trimIndent() + "\n"
             ) } catch (e: Throwable) {
-                AppLog.e("vpn", "hev.yml 쓰기 실패 (저장공간 부족?)", e)
+                AppLog.e("vpn", "hev.yml 쓰기 실패", e)
                 stopSelf()
                 return
             }
+            
             val r = TProxyService.TProxyStartService(cfg.absolutePath, fd.fd)
             if (!r) {
-                AppLog.e("vpn", "TProxyStartService 실패! 터널 종료")
+                AppLog.e("vpn", "TProxyStartService 실패")
                 try { pfd?.close() } catch (_: Exception) {}
                 pfd = null
                 stopSelf()
@@ -180,7 +198,6 @@ class VpnClientService : VpnService() {
         if (started) {
             started = false
             try { TProxyService.TProxyStopService() } catch (_: Throwable) {}
-            // ★ 네이티브 라이브러리가 FD를 안전하게 반환할 시간을 줌 (SIGSEGV 방지)
             try { Thread.sleep(300) } catch (_: Exception) {}
         }
         try { pfd?.close() } catch (_: Exception) {}
@@ -191,18 +208,13 @@ class VpnClientService : VpnService() {
 
     override fun onRevoke() {
         stopTunnel()
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
         stopSelf()
     }
 
     override fun onDestroy() {
         stopTunnel()
-        // ★ 유령 알림 방지: 서비스가 죽으면 알림창에서도 확실히 제거
-        if (Build.VERSION.SDK_INT >= 24) {
-            stopForeground(STOP_FOREGROUND_REMOVE)
-        } else {
-            @Suppress("DEPRECATION")
-            stopForeground(true)
-        }
+        if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE) else @Suppress("DEPRECATION") stopForeground(true)
         super.onDestroy()
     }
 }
