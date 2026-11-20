@@ -30,7 +30,7 @@
         </activity>
         <activity android:name=".LogActivity" android:exported="false" />
         <service android:name=".ServerService" android:exported="false" android:foregroundServiceType="connectedDevice" />
-        <service android:name=".VpnClientService" android:process=":vpn" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE">
+        <service android:name=".VpnClientService" android:exported="false" android:permission="android.permission.BIND_VPN_SERVICE">
             <intent-filter><action android:name="android.net.VpnService" /></intent-filter>
         </service>
         <service android:name=".WireGuardService" android:exported="false" />

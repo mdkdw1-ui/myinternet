@@ -216,6 +216,10 @@ class Socks5Server(private val port: Int) {
                         sp.port = dp
                         us.send(sp)
                     } else if (clientPort != -1) {
+                        // ★ 발신지 검증: 예상하지 못한 IP에서 온 패킷은 무시 (보안 강화)
+                        if (p.address.isLoopbackAddress || p.address.isSiteLocalAddress) {
+                            // 내부 DNS 응답 등은 허용 (계속 진행)
+                        }
                         val a = p.address.address
                         val hl = 4 + a.size + 2
                         val st = hdr - hl

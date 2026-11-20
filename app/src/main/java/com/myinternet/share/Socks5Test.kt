@@ -80,7 +80,21 @@ object Socks5Test {
             val hdr = byteArrayOf(0, 0, 0, 1, 8, 8, 8, 8, 0, 53)
             val pkt = hdr + dns
             
+            // ★ VPN을 우회하여 로컬 와이파이로 UDP 소켓 바인딩
             ds = DatagramSocket()
+            try {
+                if (ctx != null) {
+                    val cm = ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                    for (n in cm.allNetworks) {
+                        val caps = cm.getNetworkCapabilities(n) ?: continue
+                        if (caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) && 
+                            !caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                            n.bindSocket(ds!!)
+                            break
+                        }
+                    }
+                }
+            } catch (_: Throwable) {}
             ds.soTimeout = 4000
             ds.send(DatagramPacket(pkt, pkt.size, InetAddress.getByName(host), up))
             val buf = ByteArray(2048)

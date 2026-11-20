@@ -98,20 +98,22 @@ class VpnClientService : VpnService() {
                 .addDnsServer("198.18.0.2")
                 .addDisallowedApplication(packageName)
             
-            // ★ 핵심: 안드로이드 OS 라우팅 테이블에서 핫스팟 사설 IP 대역 제외 (VPN이 가로채지 못하게 함)
-            // 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 을 제외한 공인 IP만 VPN 라우팅에 추가
-            val localCidrs = listOf("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16")
-            for (i in 0..255) {
-                val prefix = "$i.0.0.0/8"
-                if (prefix.startsWith("10.") || prefix.startsWith("172.") || prefix.startsWith("192.")) {
-                    if (prefix.startsWith("172.")) {
-                        for (j in 16..31) builder.addRoute("172.$j.0.0/16", 16)
-                    } else if (prefix.startsWith("192.")) {
-                        builder.addRoute("192.168.0.0/16", 16)
+            // ★ 라우팅 정상화: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 은 완전히 제외
+            // 그 외 공인 IPv4 대역만 VPN으로 라우팅
+            for (i in 1..223) {
+                if (i == 10 || i == 127) continue           // 10.x.x.x, 127.x.x.x 제외
+                if (i == 172) {
+                    for (j in 0..255) {
+                        if (j in 16..31) continue            // 172.16~31.x.x 제외
+                        builder.addRoute("172.$j.0.0", 16)
                     }
-                    // 10.x.x.x 는 추가하지 않음 (제외됨)
+                } else if (i == 192) {
+                    for (j in 0..255) {
+                        if (j == 168) continue               // 192.168.x.x 제외
+                        builder.addRoute("192.$j.0.0", 16)
+                    }
                 } else {
-                    builder.addRoute(prefix, 8)
+                    builder.addRoute("$i.0.0.0", 8)
                 }
             }
             
