@@ -321,11 +321,24 @@ class MainActivity : Activity() {
                     .addTransportType(NetworkCapabilities.TRANSPORT_WIFI).setNetworkSpecifier(specifier).build()
                 val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
 
-                wifiCallback?.let { try { (getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager).unregisterNetworkCallback(it) } catch (_: Throwable) {} }
+                AppLog.i("ui", "requestNetwork 시작 SSID=$ssid")
+
+                wifiCallback?.let {
+                    try {
+                        cm.unregisterNetworkCallback(it)
+                        AppLog.i("ui", "기존 NetworkCallback 해제")
+                    } catch (t: Throwable) {
+                        AppLog.e("ui", "기존 Callback 해제 실패", t)
+                    }
+                }
+
                 wifiCallback = object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: android.net.Network) {
+                        AppLog.i("ui", "onAvailable network=$network")
+                        AppLog.i("ui", "Capabilities=${cm.getNetworkCapabilities(network)}")
+                        AppLog.i("ui", "LinkProperties=${cm.getLinkProperties(network)}")
+
                         runOnUiThread {
-                            AppLog.i("ui", "onAvailable network=$network")
                             pendingNetwork = network
                             updateStatus("Wi-Fi 연결됨", "IP 확인 중...", Color.parseColor("#2E7D32"))
                             statusDesc.postDelayed({
@@ -334,10 +347,10 @@ class MainActivity : Activity() {
                                 hostEt.setText(host)
                                 AppLog.i("ui", "QR 자동 IP = $host")
                                 try {
-                                    cm.bindProcessToNetwork(network)
-                                    AppLog.i("ui", "MainActivity bindProcessToNetwork OK")
+                                    val bound = cm.bindProcessToNetwork(network)
+                                    AppLog.i("ui", "MainActivity bindProcessToNetwork 결과=$bound network=$network")
                                 } catch (t: Throwable) {
-                                    AppLog.e("ui", "bindProcessToNetwork 실패", t)
+                                    AppLog.e("ui", "bindProcessToNetwork 예외", t)
                                 }
                                 updateStatus("VPN 연결 중...", "서버 $host", Color.parseColor("#F57C00"))
                                 requestVpnPermissionAndStart(host)
@@ -345,10 +358,27 @@ class MainActivity : Activity() {
                         }
                     }
                     override fun onUnavailable() {
-                        runOnUiThread { updateStatus("Wi-Fi 실패", "수동 연결 필요", Color.RED) }
+                        AppLog.e("ui", "onUnavailable: Wi-Fi 네트워크 요청 실패")
+                        runOnUiThread {
+                            updateStatus("Wi-Fi 실패", "수동 연결 필요", Color.RED)
+                        }
+                    }
+
+                    override fun onLost(network: android.net.Network) {
+                        AppLog.e("ui", "onLost network=$network")
+                        runOnUiThread {
+                            updateStatus("Wi-Fi 끊김", "네트워크가 해제되었습니다.", Color.RED)
+                        }
                     }
                 }
-                cm.requestNetwork(request, wifiCallback!!)
+
+                try {
+                    cm.requestNetwork(request, wifiCallback!!)
+                    AppLog.i("ui", "requestNetwork 호출 완료")
+                } catch (t: Throwable) {
+                    AppLog.e("ui", "requestNetwork 호출 예외", t)
+                    updateStatus("Wi-Fi 요청 오류", t.message ?: "오류", Color.RED)
+                }
             } else {
                 updateStatus("수동 연결", "설정에서 연결하세요", Color.parseColor("#F57C00"))
                 startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
