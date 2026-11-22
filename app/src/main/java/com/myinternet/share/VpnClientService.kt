@@ -55,6 +55,7 @@ class VpnClientService : VpnService() {
             .build()
             
         if (Build.VERSION.SDK_INT >= 29) {
+            // ★ Android 10 (API 29)은 CONNECTED_DEVICE 타입이 필수
             startForeground(2, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
             startForeground(2, notification)

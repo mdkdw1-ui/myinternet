@@ -354,7 +354,7 @@ class MainActivity : Activity() {
                                 }
                                 updateStatus("VPN 연결 중...", "서버 $host", Color.parseColor("#F57C00"))
                                 requestVpnPermissionAndStart(host)
-                            }, 1200)
+                            }, 2500)
                         }
                     }
                     override fun onUnavailable() {
