@@ -224,7 +224,8 @@ class MainActivity : Activity() {
             text = t; textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0")); setOnClickListener { f() }
         }
         utilRow.addView(utilBtn("로그") { startActivity(Intent(this, LogActivity::class.java)) })
-        utilRow.addView(utilBtn("설정") { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) })
+        utilRow.addView(utilBtn("VPN 설정") { fallbackToSystemVpnSettings() }) // ★ 추가
+        utilRow.addView(utilBtn("네트워크") { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) })
         utilRow.addView(utilBtn("테스트") { runTest(hostEt.text.toString().trim()) })
         root.addView(utilRow)
 
