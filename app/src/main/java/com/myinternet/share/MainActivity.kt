@@ -702,4 +702,15 @@ class MainActivity : Activity() {
             stopClientSafely()
         }
     }
+
+    // ★ 안드로이드 시스템 VPN 설정으로 이동하는 우회 함수
+    private fun fallbackToSystemVpnSettings() {
+        updateStatus("설정 필요", "시스템 설정에서 MyInternet을 직접 켜주세요", Color.RED)
+        Toast.makeText(this, "설정 화면에서 'MyInternet'을 찾아 직접 연결하세요.", Toast.LENGTH_LONG).show()
+        try {
+            startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
+        } catch (_: Throwable) {
+            startActivity(Intent(Settings.ACTION_SETTINGS))
+        }
+    }
 }
