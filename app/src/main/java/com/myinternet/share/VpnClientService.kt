@@ -34,6 +34,7 @@ class VpnClientService : VpnService() {
         }
         
         var host = intent?.getStringExtra("host")
+        val mode = intent?.getStringExtra("mode") ?: "udp"  // ★ udp 또는 tcp
         
         // ★ Always-on VPN으로 시작된 경우 저장된 host 또는 자동 탐지
         if (host.isNullOrBlank()) {
@@ -81,7 +82,7 @@ class VpnClientService : VpnService() {
             }
         }
 
-        startTunnel(host)
+        startTunnel(host, mode)
         return START_STICKY
     }
     
@@ -116,7 +117,7 @@ class VpnClientService : VpnService() {
     }
 
     @Synchronized
-    private fun startTunnel(host: String) {
+    private fun startTunnel(host: String, mode: String) {
         stopTunnel()
         try {
             System.setProperty("java.io.tmpdir", filesDir.absolutePath)
@@ -173,7 +174,7 @@ class VpnClientService : VpnService() {
                 socks5:
                   address: $host
                   port: ${ServerService.PORT}
-                  udp: 'udp'
+                  udp: '${if (mode == "tcp") "tcp" else "udp"}'
                   pipeline: true
                 mapdns:
                   address: 198.18.0.2

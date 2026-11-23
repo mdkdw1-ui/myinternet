@@ -39,7 +39,8 @@ class MainActivity : Activity() {
     
     private var lastQr = ""
     private var isClientMode = false
-    private var isConnecting = false // ★ 연타 방지용
+    private var isConnecting = false
+    private var currentMode = "udp" // ★ 연타 방지용
     private var isWgMode = false
     private var btnWg: Button? = null
     private var wgConfEt: EditText? = null
@@ -736,5 +737,36 @@ class MainActivity : Activity() {
         } catch (_: Throwable) {
             startActivity(Intent(Settings.ACTION_SETTINGS))
         }
+    }
+
+    // ★ UDP/TCP 모드 선택 다이얼로그
+    private fun showModeSelectionDialog() {
+        val modes = arrayOf("🎮 UDP 모드 (게임용)", "🛒 TCP 모드 (웹/쇼핑 앱용)")
+        AlertDialog.Builder(this)
+            .setTitle("VPN 연결 모드 선택")
+            .setItems(modes) { _, which ->
+                val mode = if (which == 0) "udp" else "tcp"
+                startClientWithMode(mode)
+            }
+            .setNegativeButton("취소", null)
+            .show()
+    }
+    
+    // ★ 선택된 모드로 VPN 연결 시작
+    private fun startClientWithMode(mode: String) {
+        if (isClientMode) {
+            stopClientSafely()
+            statusDesc.postDelayed({ startClientWithMode(mode) }, 800)
+            return
+        }
+        hostEt.visibility = View.VISIBLE
+        val host = hostEt.text.toString().trim()
+        if (host.isEmpty()) {
+            Toast.makeText(this, "서버 IP를 입력하세요", Toast.LENGTH_SHORT).show()
+            return
+        }
+        currentMode = mode
+        updateStatus("연결 중...", "$mode 모드로 연결", Color.parseColor("#F57C00"))
+        requestVpnPermissionAndStart(host)
     }
 }
