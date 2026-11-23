@@ -315,8 +315,18 @@ class MainActivity : Activity() {
             }
             val ssid = Regex("S:([^;]+)").find(qrText)?.groupValues?.get(1)?.replace("\\\\", "\\") ?: return
             val pass = Regex("P:([^;]+)").find(qrText)?.groupValues?.get(1)?.replace("\\\\", "\\") ?: ""
-            updateStatus("Wi-Fi 연결 중...", "SSID: $ssid", Color.parseColor("#F57C00"))
-            connectToWifi(ssid, pass)
+            
+            // ★ Android 10 WifiNetworkSpecifier 버그 우회: 자동 연결 대신 수동 안내
+            updateStatus("와이파이 수동 연결 필요", "설정에서 '$ssid' 에 직접 연결한 후, [수동 연결]을 눌러주세요.", Color.parseColor("#F57C00"))
+            Toast.makeText(this, "와이파이 설정에서 직접 연결한 뒤 돌아와 주세요.", Toast.LENGTH_LONG).show()
+            
+            // 와이파이 설정 화면으로 이동
+            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+            
+            // SSID와 비밀번호를 클립보드에 복사해두면 편리함 (선택사항)
+            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
+            cm.setPrimaryClip(android.content.ClipData.newPlainText("wifi", "SSID: $ssid\nPW: $pass"))
+            
         } catch (t: Throwable) {
             updateStatus("QR 오류", t.message ?: "해석 실패", Color.RED)
         }
