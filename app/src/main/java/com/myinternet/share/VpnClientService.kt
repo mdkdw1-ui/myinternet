@@ -8,12 +8,14 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.net.ConnectivityManager
 import android.net.Network
+import android.net.NetworkCapabilities
 import android.net.VpnService
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import hev.htproxy.TProxyService
 import java.io.File
+import java.net.Inet4Address
 import kotlin.concurrent.thread
 
 class VpnClientService : VpnService() {
@@ -33,29 +35,36 @@ class VpnClientService : VpnService() {
         
         var host = intent?.getStringExtra("host")
         
-        if (host == null) {
+        // ★ Always-on VPN으로 시작된 경우 저장된 host 또는 자동 탐지
+        if (host.isNullOrBlank()) {
             val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             host = prefs.getString(KEY_HOST, null)
-            if (host == null) {
+        }
+        
+        if (host.isNullOrBlank()) {
+            // 저장된 host도 없으면 Wi-Fi 게이트웨이에서 자동 탐지 (S24+ 핫스팟 IP)
+            host = detectGatewayHost()
+            if (host.isNullOrBlank()) {
+                AppLog.e("vpn", "Always-on: host 없음, 서비스 종료")
                 stopSelf()
                 return START_NOT_STICKY
             }
-            AppLog.i("vpn", "강제 종료 후 재시작됨. 복구된 host=$host")
+            AppLog.i("vpn", "Always-on: 자동 탐지된 host=$host")
         } else {
+            // host가 있으면 저장 (다음 Always-on 시 사용)
             val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             prefs.edit().putString(KEY_HOST, host).apply()
         }
         
         createNotificationChannel()
         val notification = Notification.Builder(this, "vpn_channel")
-            .setContentTitle("MyInternet VPN 연결됨")
-            .setContentText("서버 $host 로 우회 중")
+            .setContentTitle("MyInternet VPN 실행 중")
+            .setContentText("서버 $host 로 연결 중")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .build()
             
         if (Build.VERSION.SDK_INT >= 29) {
-            // ★ Android 10 (API 29)은 CONNECTED_DEVICE 타입이 필수
             startForeground(2, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
             startForeground(2, notification)
@@ -75,6 +84,29 @@ class VpnClientService : VpnService() {
         startTunnel(host)
         return START_STICKY
     }
+    
+    // ★ Wi-Fi 게이트웨이 자동 탐지 (Always-on VPN용)
+    private fun detectGatewayHost(): String? {
+        try {
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
+            for (n in cm.allNetworks) {
+                val caps = cm.getNetworkCapabilities(n) ?: continue
+                if (!caps.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)) continue
+                if (caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+                val lp = cm.getLinkProperties(n) ?: continue
+                for (r in lp.routes) {
+                    val g = r.gateway
+                    if (r.isDefaultRoute && g is Inet4Address && !g.isAnyLocalAddress) {
+                        AppLog.i("vpn", "자동 탐지: 게이트웨이 = ${g.hostAddress}")
+                        return g.hostAddress
+                    }
+                }
+            }
+        } catch (t: Throwable) {
+            AppLog.e("vpn", "게이트웨이 탐지 실패", t)
+        }
+        return null
+    }
 
     private fun createNotificationChannel() {
         val nm = getSystemService(NotificationManager::class.java)
@@ -87,9 +119,7 @@ class VpnClientService : VpnService() {
     private fun startTunnel(host: String) {
         stopTunnel()
         try {
-            // ★ UAPIOpen 권한 에러 해결 (임시 폴더를 앱 전용으로 변경)
             System.setProperty("java.io.tmpdir", filesDir.absolutePath)
-            
             Class.forName("hev.htproxy.TProxyService")
             
             val builder = Builder()
@@ -99,18 +129,17 @@ class VpnClientService : VpnService() {
                 .addDnsServer("198.18.0.2")
                 .addDisallowedApplication(packageName)
             
-            // ★ 라우팅 정상화: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16 은 완전히 제외
-            // 그 외 공인 IPv4 대역만 VPN으로 라우팅
+            // 10, 172.16-31, 192.168 제외한 공인 IP만 VPN 라우팅
             for (i in 1..223) {
-                if (i == 10 || i == 127) continue           // 10.x.x.x, 127.x.x.x 제외
+                if (i == 10 || i == 127) continue
                 if (i == 172) {
                     for (j in 0..255) {
-                        if (j in 16..31) continue            // 172.16~31.x.x 제외
+                        if (j in 16..31) continue
                         builder.addRoute("172.$j.0.0", 16)
                     }
                 } else if (i == 192) {
                     for (j in 0..255) {
-                        if (j == 168) continue               // 192.168.x.x 제외
+                        if (j == 168) continue
                         builder.addRoute("192.$j.0.0", 16)
                     }
                 } else {
@@ -120,7 +149,7 @@ class VpnClientService : VpnService() {
             
             val fd = builder.establish()
             if (fd == null) {
-                AppLog.e("vpn", "establish() null")
+                AppLog.e("vpn", "establish() null - 권한 없음 또는 다른 VPN 점유")
                 stopSelf()
                 return
             }
@@ -171,7 +200,7 @@ class VpnClientService : VpnService() {
                 return
             }
             started = true
-            AppLog.i("vpn", "TProxyStartService 반환: $r")
+            AppLog.i("vpn", "터널 시작 성공. host=$host")
             startStats()
         } catch (t: Throwable) {
             AppLog.e("vpn", "터널 시작 실패", t)
