@@ -540,7 +540,18 @@ class MainActivity : Activity() {
     }
 
     private fun requestVpnPermissionAndStart(host: String) {
+        if (isConnecting) return
         isConnecting = true
+        
+        // ★ Android 10 무한 대기 방지: 15초 후 자동으로 상태 초기화
+        uiHandler.postDelayed({
+            if (isConnecting) {
+                isConnecting = false
+                updateStatus("연결 시간 초과", "다시 시도해 주세요", Color.RED)
+                refresh() // 버튼 다시 활성화
+            }
+        }, 15000)
+
         val prep = VpnService.prepare(this)
         if (prep != null) { pendingHost = host; @Suppress("DEPRECATION") startActivityForResult(prep, 100) }
         else startVpn(host)
@@ -615,6 +626,7 @@ class MainActivity : Activity() {
             } else updateStatus("권한 거부", "WireGuard VPN 권한 필요", Color.RED)
         } else if (requestCode == 100) {
             isConnecting = false // ★ 락 해제
+            uiHandler.removeCallbacksAndMessages(null) // 타임아웃 취소
             if (resultCode == Activity.RESULT_OK) startVpn(pendingHost)
             else updateStatus("권한 거부", "VPN 필요", Color.RED)
         } else {
