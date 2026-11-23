@@ -54,6 +54,15 @@ class MainActivity : Activity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        
+        // ★ 앱 시작 시 VPN 권한을 미리 요청 (Android 10 VPN 설정 등록)
+        try {
+            val prep = VpnService.prepare(this)
+            if (prep != null) {
+                @Suppress("DEPRECATION")
+                startActivityForResult(prep, 999)
+            }
+        } catch (_: Throwable) {}
         // ★ 프로세스 재시작 시 UI 상태 복원
         isClientMode = getSharedPreferences("ui_state", MODE_PRIVATE).getBoolean("is_client", false)
         requestNecessaryPermissions()
@@ -625,6 +634,11 @@ class MainActivity : Activity() {
                 val f = java.io.File(filesDir, "wg.conf")
                 reallyStartWg(f.absolutePath)
             } else updateStatus("권한 거부", "WireGuard VPN 권한 필요", Color.RED)
+        } else if (requestCode == 999) {
+            // ★ 앱 시작 시 VPN 승인 결과
+            if (resultCode == Activity.RESULT_OK) {
+                AppLog.i("ui", "VPN 권한 사전 승인 완료")
+            }
         } else if (requestCode == 100) {
             isConnecting = false // ★ 락 해제
             uiHandler.removeCallbacksAndMessages(null) // 타임아웃 취소
