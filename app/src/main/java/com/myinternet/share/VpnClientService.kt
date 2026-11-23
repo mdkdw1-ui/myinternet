@@ -124,7 +124,7 @@ class VpnClientService : VpnService() {
             
             val builder = Builder()
                 .setSession("MyInternet")
-                .setMtu(1500)
+                .setMtu(1280)
                 .addAddress("198.18.0.1", 32)
                 .addDnsServer("198.18.0.2")
                 .addDisallowedApplication(packageName)
@@ -168,7 +168,7 @@ class VpnClientService : VpnService() {
             try { cfg.writeText(
                 """
                 tunnel:
-                  mtu: 1500
+                  mtu: 1280
                   ipv4: 198.18.0.1
                 socks5:
                   address: $host
@@ -184,6 +184,7 @@ class VpnClientService : VpnService() {
                 misc:
                   log-file: ${logFile.absolutePath}
                   log-level: warn
+                  read-write-timeout: 300000
                 """.trimIndent() + "\n"
             ) } catch (e: Throwable) {
                 AppLog.e("vpn", "hev.yml 쓰기 실패", e)
