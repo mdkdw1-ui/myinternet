@@ -1,18 +1,11 @@
-package com.myinternet.share
-
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Intent
-import android.net.Uri
 import android.graphics.Color
 import android.graphics.Typeface
 import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
-import android.net.NetworkRequest
 import android.net.VpnService
-import android.net.wifi.WifiManager
-import android.net.wifi.WifiNetworkSpecifier
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -31,584 +24,271 @@ class MainActivity : Activity() {
     private lateinit var statusTitle: TextView
     private lateinit var statusDesc: TextView
     private lateinit var btnServer: Button
-    private lateinit var btnClient: Button
-    private lateinit var btnDisconnect: Button // ★ 명확한 해제 버튼 추가
+    private lateinit var btnClientUdp: Button
+    private lateinit var btnClientTcp: Button
+    private lateinit var btnDisconnect: Button
     private lateinit var btnScan: Button
+    private lateinit var btnExitApp: Button
     private lateinit var qrView: ImageView
     private lateinit var statsText: TextView
-    
+
     private var lastQr = ""
-    private var isClientMode = false
     private var isConnecting = false
-    private var currentMode = "udp" // ★ 연타 방지용
-    private var isWgMode = false
+    private var selectedMode = "udp"
     private var btnWg: Button? = null
     private var wgConfEt: EditText? = null
     private var btnWgStop: Button? = null
     private var pendingHost = ""
     private var pendingNetwork: android.net.Network? = null
     private var wifiCallback: ConnectivityManager.NetworkCallback? = null
-    
+
     private var lastTx = 0L
     private var lastRx = 0L
     private val uiHandler = Handler(Looper.getMainLooper())
+    private val timeoutRunnable = Runnable {
+        if (isConnecting) {
+            isConnecting = false
+            updateStatus("연결 시간 초과", "다시 시도해 주세요", Color.RED)
+            refresh()
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        
-        // ★ 앱 시작 시 VPN 권한을 미리 요청 (Android 10 VPN 설정 등록)
         try {
             val prep = VpnService.prepare(this)
-            if (prep != null) {
-                @Suppress("DEPRECATION")
-                startActivityForResult(prep, 999)
-            }
+            if (prep != null) { @Suppress("DEPRECATION") startActivityForResult(prep, 999) }
         } catch (_: Throwable) {}
-        // ★ 프로세스 재시작 시 UI 상태 복원
-        isClientMode = getSharedPreferences("ui_state", MODE_PRIVATE).getBoolean("is_client", false)
         requestNecessaryPermissions()
         buildPremiumUI()
         startStatsUpdater()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (!VpnClientService.running) {
+            val detected = NetUtil.serverHost(this)
+            if (hostEt.text.toString().isBlank() || hostEt.text.toString() == NetUtil.FALLBACK) hostEt.setText(detected)
+        }
+        refresh()
+    }
+
     private fun requestNecessaryPermissions() {
         val perms = mutableListOf<String>()
-        if (Build.VERSION.SDK_INT >= 33) {
-            perms += Manifest.permission.POST_NOTIFICATIONS
-            perms += Manifest.permission.NEARBY_WIFI_DEVICES
-        } else {
-            perms += Manifest.permission.ACCESS_FINE_LOCATION
-        }
+        if (Build.VERSION.SDK_INT >= 33) { perms += Manifest.permission.POST_NOTIFICATIONS; perms += Manifest.permission.NEARBY_WIFI_DEVICES }
+        else { perms += Manifest.permission.ACCESS_FINE_LOCATION }
         perms += Manifest.permission.CAMERA
         requestPermissions(perms.toTypedArray(), 1)
     }
 
     private fun buildPremiumUI() {
-        val pad = (24 * resources.displayMetrics.density).toInt()
+        val d = resources.displayMetrics.density
+        val pad = (20 * d).toInt()
         val root = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            setPadding(pad, pad, pad, pad)
-            setBackgroundColor(Color.parseColor("#F5F7FA"))
+            orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, pad); setBackgroundColor(Color.parseColor("#F5F7FA"))
         }
-        
-        // 타이틀
-        root.addView(TextView(this).apply {
-            text = "MyInternet"; textSize = 28f; setTextColor(Color.parseColor("#0D47A1"))
-            setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER
-        })
+        root.addView(TextView(this).apply { text = "MyInternet"; textSize = 26f; setTextColor(Color.parseColor("#0D47A1")); setTypeface(null, Typeface.BOLD); gravity = Gravity.CENTER })
 
-        // 상태 카드
-        val statusCard = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE)
-            setPadding(pad, pad, pad, pad); setElevation(10f)
-        }
-        statusTitle = TextView(this).apply {
-            text = "대기 중"; textSize = 20f; setTypeface(null, Typeface.BOLD)
-            setTextColor(Color.parseColor("#333333")); gravity = Gravity.CENTER
-        }
-        statusDesc = TextView(this).apply {
-            text = "아래 버튼을 눌러 시작하세요"; textSize = 14f
-            setTextColor(Color.parseColor("#666666")); gravity = Gravity.CENTER; setPadding(0, 8, 0, 0)
-        }
-        statsText = TextView(this).apply {
-            text = "속도: - | 데이터: -"; textSize = 13f
-            setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER; setPadding(0, 12, 0, 0)
-            setTypeface(Typeface.MONOSPACE)
-        }
-        
+        val statusCard = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setBackgroundColor(Color.WHITE); setPadding(pad, pad, pad, pad); elevation = 8f }
+        statusTitle = TextView(this).apply { text = "대기 중"; textSize = 19f; setTypeface(null, Typeface.BOLD); setTextColor(Color.parseColor("#333333")); gravity = Gravity.CENTER }
+        statusDesc = TextView(this).apply { text = "아래 버튼을 눌러 시작하세요"; textSize = 13f; setTextColor(Color.parseColor("#666666")); gravity = Gravity.CENTER; setPadding(0, 8, 0, 0) }
+        statsText = TextView(this).apply { text = "속도: - | 데이터: -"; textSize = 13f; setTextColor(Color.parseColor("#1565C0")); gravity = Gravity.CENTER; setPadding(0, 12, 0, 0); setTypeface(Typeface.MONOSPACE) }
         statusCard.addView(statusTitle); statusCard.addView(statusDesc); statusCard.addView(statsText)
-        root.addView(statusCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, pad, 0, pad) })
+        root.addView(statusCard, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, (16 * d).toInt(), 0, (16 * d).toInt()) })
 
-        // 서버/클라 시작 버튼
-        val btnRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btnServer = Button(this).apply {
-            text = "서버 시작\n(데이터 폰)"; textSize = 16f; setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE)
-            setOnClickListener { startServerMode() }
-        }
-        btnClient = Button(this).apply {
-            text = "수동 연결\n(IP 입력)"; textSize = 16f; setBackgroundColor(Color.parseColor("#2E7D32")); setTextColor(Color.WHITE)
-            setOnClickListener { startClientMode() }
-        }
-        btnRow.addView(btnServer, LinearLayout.LayoutParams(0, (80 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(8, 0, 8, 0) })
-        btnRow.addView(btnClient, LinearLayout.LayoutParams(0, (80 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(8, 0, 8, 0) })
-        root.addView(btnRow)
+        btnServer = Button(this).apply { text = "서버 시작 (데이터 폰 / S24+)"; textSize = 15f; setBackgroundColor(Color.parseColor("#1565C0")); setTextColor(Color.WHITE); setOnClickListener { startServerMode() } }
+        root.addView(btnServer, LinearLayout.LayoutParams(-1, (56 * d).toInt()).apply { setMargins(4, 0, 4, (12 * d).toInt()) })
 
-        // QR 스캔 버튼
-        btnScan = Button(this).apply {
-            text = "QR 코드 스캔하여 자동 연결"; textSize = 16f; setBackgroundColor(Color.parseColor("#F57C00")); setTextColor(Color.WHITE)
-            setOnClickListener { startQrScanLegacy() }
-        }
-        root.addView(btnScan, LinearLayout.LayoutParams(-1, (60 * resources.displayMetrics.density).toInt()).apply { setMargins(8, pad, 8, 0) })
+        hostEt = EditText(this).apply { hint = "서버 IP 주소 (예: 192.168.43.1)"; inputType = InputType.TYPE_CLASS_TEXT; setText(NetUtil.serverHost(this@MainActivity)); gravity = Gravity.CENTER; setBackgroundColor(Color.WHITE); setPadding(16, (12 * d).toInt(), 16, (12 * d).toInt()) }
+        root.addView(hostEt, LinearLayout.LayoutParams(-1, -2).apply { setMargins(4, 0, 4, (10 * d).toInt()) })
 
-        // IP 입력창
-        hostEt = EditText(this).apply {
-            hint = "서버 IP 주소"; inputType = InputType.TYPE_CLASS_TEXT
-            setText(NetUtil.serverHost(this@MainActivity)); visibility = View.GONE
-            gravity = Gravity.CENTER; setPadding(0, pad, 0, pad)
-        }
-        root.addView(hostEt)
+        val modeRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        btnClientUdp = Button(this).apply { text = "🎮 UDP 연결\n(게임용)"; textSize = 15f; setBackgroundColor(Color.parseColor("#2E7D32")); setTextColor(Color.WHITE); setOnClickListener { connectClientMode("udp") } }
+        btnClientTcp = Button(this).apply { text = "🛒 TCP 연결\n(롯데·H몰·웹용)"; textSize = 15f; setBackgroundColor(Color.parseColor("#00838F")); setTextColor(Color.WHITE); setOnClickListener { connectClientMode("tcp") } }
+        modeRow.addView(btnClientUdp, LinearLayout.LayoutParams(0, (68 * d).toInt(), 1f).apply { setMargins(4, 0, 6, 0) })
+        modeRow.addView(btnClientTcp, LinearLayout.LayoutParams(0, (68 * d).toInt(), 1f).apply { setMargins(6, 0, 4, 0) })
+        root.addView(modeRow)
 
-        // QR 이미지 뷰
+        btnDisconnect = Button(this).apply { text = "클라이언트 연결 해제 (OFF)"; textSize = 15f; setBackgroundColor(Color.parseColor("#D32F2F")); setTextColor(Color.WHITE); setOnClickListener { if (VpnClientService.running || isConnecting) stopClientSafely() else Toast.makeText(context, "현재 연결된 VPN이 없습니다.", Toast.LENGTH_SHORT).show() } }
+        root.addView(btnDisconnect, LinearLayout.LayoutParams(-1, (54 * d).toInt()).apply { setMargins(4, (10 * d).toInt(), 4, 0) })
+
+        btnScan = Button(this).apply { text = "QR 코드 스캔하여 Wi-Fi 연결"; textSize = 14f; setBackgroundColor(Color.parseColor("#F57C00")); setTextColor(Color.WHITE); setOnClickListener { startQrScanLegacy() } }
+        root.addView(btnScan, LinearLayout.LayoutParams(-1, (48 * d).toInt()).apply { setMargins(4, (10 * d).toInt(), 4, 0) })
+
         qrView = ImageView(this).apply { visibility = View.GONE; scaleType = ImageView.ScaleType.FIT_CENTER }
-        root.addView(qrView, LinearLayout.LayoutParams((200 * resources.displayMetrics.density).toInt(), (200 * resources.displayMetrics.density).toInt()).apply { gravity = Gravity.CENTER; setMargins(0, pad, 0, pad) })
+        root.addView(qrView, LinearLayout.LayoutParams((190 * d).toInt(), (190 * d).toInt()).apply { gravity = Gravity.CENTER; setMargins(0, 16, 0, 16) })
 
-        // ★ 빨간색 [연결 해제] 버튼 (항상 보임)
-        btnDisconnect = Button(this).apply {
-            text = "클라이언트 연결 해제 (OFF)"
-            textSize = 16f
-            setBackgroundColor(Color.parseColor("#D32F2F")) // 빨간색
-            setTextColor(Color.WHITE)
-            setOnClickListener { 
-                btnWg?.isEnabled = !isClientMode && !isWgMode
-        btnWgStop?.isEnabled = isWgMode
-        if (isWgMode) {
-            btnClient.isEnabled = false
-            btnDisconnect.isEnabled = false
-        } else if (!isClientMode) {
-            btnClient.isEnabled = true
-        }
-        if (isClientMode) {
-                    stopClientSafely()
-                } else {
-                    Toast.makeText(context, "현재 연결된 VPN이 없습니다.", Toast.LENGTH_SHORT).show()
-                }
-            }
-        }
-        root.addView(btnDisconnect, LinearLayout.LayoutParams(-1, (60 * resources.displayMetrics.density).toInt()).apply { setMargins(8, pad, 8, 0) })
-
-        
-        // ★ WireGuard 클라이언트 영역
-        val wgLabel = TextView(this).apply {
-            text = "WireGuard client.conf 붙여넣기"; textSize = 13f
-            setTextColor(Color.parseColor("#4A148C")); setPadding(0, pad, 0, 4)
-        }
-        wgConfEt = EditText(this).apply {
-            hint = "[Interface]\nPrivateKey = ...\nAddress = ...\n\n[Peer]\nPublicKey = ...\nEndpoint = ...\nAllowedIPs = ..."
-            textSize = 11f; gravity = Gravity.START or Gravity.TOP
-            setSingleLine(false); setLines(6)
-            setText(NetUtil.loadWgConf(this@MainActivity))
-            setPadding(pad, pad, pad, pad)
-        }
+        val wgLabel = TextView(this).apply { text = "WireGuard (S24+ IP 변경용 client.conf)"; textSize = 13f; setTextColor(Color.parseColor("#4A148C")); setPadding(4, (18 * d).toInt(), 0, 4) }
+        wgConfEt = EditText(this).apply { hint = "[Interface]\nPrivateKey = ...\nAddress = ...\n\n[Peer]\nPublicKey = ...\nEndpoint = ...\nAllowedIPs = ..."; textSize = 11f; gravity = Gravity.START or Gravity.TOP; setSingleLine(false); setLines(5); setText(NetUtil.loadWgConf(this@MainActivity)); setBackgroundColor(Color.WHITE); setPadding(16, 16, 16, 16) }
+        val wgFileBtn = Button(this).apply { text = "client.conf 파일 불러오기"; textSize = 13f; setBackgroundColor(Color.parseColor("#455A64")); setTextColor(Color.WHITE); setOnClickListener { try { val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply { addCategory(Intent.CATEGORY_OPENABLE); type = "*/*" }; @Suppress("DEPRECATION") startActivityForResult(i, 102) } catch (t: Throwable) { Toast.makeText(this@MainActivity, "파일 선택기 오류: " + t.message, Toast.LENGTH_LONG).show() } } }
         val wgRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
-        btnWg = Button(this).apply {
-            text = "WireGuard ON"; textSize = 15f
-            setBackgroundColor(Color.parseColor("#6A1B9A")); setTextColor(Color.WHITE)
-            setOnClickListener { startWireGuard() }
-        }
-        val wgFileBtn = Button(this).apply {
-            text = "client.conf 파일 선택"
-            textSize = 13f
-            setBackgroundColor(Color.parseColor("#455A64"))
-            setTextColor(Color.WHITE)
-            setOnClickListener {
-                try {
-                    val i = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-                        addCategory(Intent.CATEGORY_OPENABLE)
-                        type = "*/*"
-                    }
-                    @Suppress("DEPRECATION")
-                    startActivityForResult(i, 102)
-                } catch (t: Throwable) {
-                    Toast.makeText(this@MainActivity, "파일 선택기 오류: " + t.message, Toast.LENGTH_LONG).show()
-                }
-            }
-        }
-        root.addView(wgFileBtn, LinearLayout.LayoutParams(-1, LinearLayout.LayoutParams.WRAP_CONTENT).apply { setMargins(0, 0, 0, 8) })
+        btnWg = Button(this).apply { text = "WireGuard ON"; textSize = 14f; setBackgroundColor(Color.parseColor("#6A1B9A")); setTextColor(Color.WHITE); setOnClickListener { startWireGuard() } }
+        btnWgStop = Button(this).apply { text = "WireGuard OFF"; textSize = 14f; setBackgroundColor(Color.parseColor("#4A148C")); setTextColor(Color.WHITE); setOnClickListener { stopWireGuard() } }
+        wgRow.addView(btnWg, LinearLayout.LayoutParams(0, (50 * d).toInt(), 1f).apply { setMargins(4, 0, 4, 0) })
+        wgRow.addView(btnWgStop, LinearLayout.LayoutParams(0, (50 * d).toInt(), 1f).apply { setMargins(4, 0, 4, 0) })
+        root.addView(wgLabel); root.addView(wgFileBtn, LinearLayout.LayoutParams(-1, -2).apply { setMargins(4, 0, 4, 6) }); root.addView(wgConfEt, LinearLayout.LayoutParams(-1, (120 * d).toInt()).apply { setMargins(4, 0, 4, 8) }); root.addView(wgRow)
 
-        btnWgStop = Button(this).apply {
-            text = "WireGuard OFF"; textSize = 15f
-            setBackgroundColor(Color.parseColor("#4A148C")); setTextColor(Color.WHITE)
-            setOnClickListener { stopWireGuard() }
-        }
-        wgRow.addView(btnWg, LinearLayout.LayoutParams(0, (56 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(0, 0, 4, 0) })
-        wgRow.addView(btnWgStop, LinearLayout.LayoutParams(0, (56 * resources.displayMetrics.density).toInt(), 1f).apply { setMargins(4, 0, 0, 0) })
-        root.addView(wgLabel)
-        root.addView(wgConfEt, LinearLayout.LayoutParams(-1, (140 * resources.displayMetrics.density).toInt()).apply { setMargins(0, 0, 0, 8) })
-        root.addView(wgRow)
-        root.addView(View(this).apply { layoutParams = LinearLayout.LayoutParams(-1, 0, 1f) })
+        btnExitApp = Button(this).apply { text = "✕ 완전 종료 (모든 서버·VPN 끄고 앱 닫기)"; textSize = 14f; setTypeface(null, Typeface.BOLD); setBackgroundColor(Color.parseColor("#263238")); setTextColor(Color.WHITE); setOnClickListener { exitApplicationCompletely() } }
+        root.addView(btnExitApp, LinearLayout.LayoutParams(-1, (52 * d).toInt()).apply { setMargins(4, (18 * d).toInt(), 4, 4) })
 
-
-        // 하단 유틸리티
         val utilRow = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER }
-        fun utilBtn(t: String, f: () -> Unit) = Button(this).apply {
-            text = t; textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0")); setOnClickListener { f() }
-        }
-        utilRow.addView(utilBtn("로그") { startActivity(Intent(this, LogActivity::class.java)) })
-        utilRow.addView(utilBtn("VPN 설정") { fallbackToSystemVpnSettings() }) // ★ 추가
-        utilRow.addView(utilBtn("네트워크") { startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS)) })
-        utilRow.addView(utilBtn("테스트") { runTest(hostEt.text.toString().trim()) })
-        root.addView(utilRow)
+        fun utilBtn(t: String, f: () -> Unit) = Button(this).apply { text = t; textSize = 12f; setBackgroundColor(Color.TRANSPARENT); setTextColor(Color.parseColor("#1565C0")); setOnClickListener { f() } }
+        utilRow.addView(utilBtn("로그") { startActivity(Intent(this, LogActivity::class.java)) }); utilRow.addView(utilBtn("VPN 설정") { fallbackToSystemVpnSettings() }); utilRow.addView(utilBtn("와이파이") { startActivity(Intent(Settings.ACTION_WIFI_SETTINGS)) }); utilRow.addView(utilBtn("연결 테스트") { runTest(hostEt.text.toString().trim()) })
+        root.addView(utilRow, LinearLayout.LayoutParams(-1, -2).apply { setMargins(0, 8, 0, 0) })
 
-        setContentView(ScrollView(this).apply { addView(root) })
-        refresh()
+        setContentView(ScrollView(this).apply { addView(root) }); refresh()
+    }
+
+    private fun exitApplicationCompletely() {
+        Toast.makeText(this, "모든 연결을 종료하고 앱을 닫습니다...", Toast.LENGTH_SHORT).show()
+        try { LocalHotspot.stop(); startService(Intent(this, ServerService::class.java).setAction("stop")); stopService(Intent(this, ServerService::class.java)); stopClientSafely(silent = true); startService(Intent(this, WireGuardService::class.java).setAction("stop")); stopService(Intent(this, WireGuardService::class.java)) } catch (_: Throwable) {}
+        uiHandler.postDelayed({ try { finishAndRemoveTask() } catch (_: Throwable) { finish() }; android.os.Process.killProcess(android.os.Process.myPid()) }, 500)
     }
 
     private fun startStatsUpdater() {
         uiHandler.postDelayed(object : Runnable {
             override fun run() {
                 try {
-                    btnWg?.isEnabled = !isClientMode && !isWgMode
-        btnWgStop?.isEnabled = isWgMode
-        if (isWgMode) {
-            btnClient.isEnabled = false
-            btnDisconnect.isEnabled = false
-        } else if (!isClientMode) {
-            btnClient.isEnabled = true
-        }
-        if (isClientMode) {
+                    refresh()
+                    if (VpnClientService.running) {
                         val stats = TProxyService.TProxyGetStats()
                         if (stats.size >= 4) {
-                            val tx = stats[1]
-                            val rx = stats[3]
-                            
-                            val dTx = tx - lastTx
-                            val dRx = rx - lastRx
-                            
-                            fun formatBytes(b: Long): String {
-                                if (b < 1024) return "${b}B"
-                                if (b < 1024 * 1024) return String.format("%.1fKB", b / 1024.0)
-                                return String.format("%.1fMB", b / (1024.0 * 1024.0))
-                            }
-                            
-                            val upSpeed = formatBytes(dTx)
-                            val downSpeed = formatBytes(dRx)
-                            val totalUsed = formatBytes(tx + rx)
-                            
-                            statsText.text = "▼ ${downSpeed}/s  ▲ ${upSpeed}/s  |  누적: ${totalUsed}"
-                            
-                            lastTx = tx
-                            lastRx = rx
+                            val tx = stats[1]; val rx = stats[3]
+                            val dTx = (tx - lastTx).coerceAtLeast(0L); val dRx = (rx - lastRx).coerceAtLeast(0L)
+                            fun formatBytes(b: Long): String { if (b < 1024) return "${b}B"; if (b < 1024 * 1024) return String.format("%.1fKB", b / 1024.0); return String.format("%.1fMB", b / (1024.0 * 1024.0)) }
+                            statsText.text = "▼ ${formatBytes(dRx)}/s ▲ ${formatBytes(dTx)}/s | 누적: ${formatBytes(tx + rx)}"
+                            lastTx = tx; lastRx = rx
                         }
                     } else if (ServerService.running) {
-                        statsText.text = "접속 중인 클라이언트: ${ServerService.activeClientCount}대"
-                    } else {
-                        statsText.text = "속도: - | 데이터: -"
-                    }
+                        val wgInfo = if (WireGuardService.running) " | WG 활성" else ""
+                        statsText.text = "접속 중인 클라이언트: ${ServerService.activeClientCount}대$wgInfo"
+                    } else if (WireGuardService.running) { statsText.text = "WireGuard VPN 작동 중" }
+                    else { statsText.text = "속도: - | 데이터: -" }
                 } catch (_: Throwable) {}
                 uiHandler.postDelayed(this, 1000)
             }
         }, 1000)
     }
 
-    private fun startQrScanLegacy() {
-        if (isClientMode) {
-            Toast.makeText(this, "VPN 연결 중에는 QR 스캔 불가. 먼저 연결 해제하세요.", Toast.LENGTH_SHORT).show()
+    private fun connectClientMode(mode: String) {
+        if (WireGuardService.running) { Toast.makeText(this, "WireGuard를 먼저 끄세요.", Toast.LENGTH_SHORT).show(); return }
+        val host = hostEt.text.toString().trim().ifEmpty { NetUtil.serverHost(this).also { hostEt.setText(it) } }
+        if (host.isEmpty()) { Toast.makeText(this, "서버 IP를 입력하세요", Toast.LENGTH_SHORT).show(); return }
+        if (VpnClientService.running) {
+            updateStatus("모드 전환 중...", "기존 연결을 안전하게 해제하는 중", Color.parseColor("#F57C00"))
+            stopClientSafely(silent = true)
+            uiHandler.postDelayed({ selectedMode = mode; pendingNetwork = null; requestVpnPermissionAndStart(host) }, 700)
             return
         }
-        val integrator = IntentIntegrator(this)
-        integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
-        integrator.setPrompt("서버 폰의 Wi-Fi QR 코드를 스캔하세요")
-        integrator.setBeepEnabled(false)
-        integrator.setOrientationLocked(false)
-        integrator.initiateScan()
+        selectedMode = mode; pendingNetwork = null; requestVpnPermissionAndStart(host)
+    }
+
+    private fun startQrScanLegacy() {
+        if (VpnClientService.running) { Toast.makeText(this, "VPN 연결 중에는 QR 스캔 불가. 먼저 연결 해제하세요.", Toast.LENGTH_SHORT).show(); return }
+        val integrator = IntentIntegrator(this); integrator.setDesiredBarcodeFormats(IntentIntegrator.QR_CODE); integrator.setPrompt("서버 폰의 Wi-Fi QR 코드를 스캔하세요"); integrator.setBeepEnabled(false); integrator.setOrientationLocked(false); integrator.initiateScan()
     }
 
     private fun handleWifiQr(qrText: String) {
         try {
             if (!qrText.startsWith("WIFI:")) {
                 val host = qrText.trim()
-                if (host.matches(Regex("^[0-9.]+(:[0-9]+)?$"))) {
-                    hostEt.setText(host.substringBefore(":"))
-                    requestVpnPermissionAndStart(host.substringBefore(":"))
-                    return
-                }
+                if (host.matches(Regex("^[0-9.]+(:[0-9]+)?$"))) { hostEt.setText(host.substringBefore(":")); connectClientMode("udp"); return }
                 updateStatus("QR 오류", "Wi-Fi QR이 아닙니다.", Color.RED); return
             }
             val ssid = Regex("S:([^;]+)").find(qrText)?.groupValues?.get(1)?.replace("\\\\", "\\") ?: return
             val pass = Regex("P:([^;]+)").find(qrText)?.groupValues?.get(1)?.replace("\\\\", "\\") ?: ""
-            
-            // ★ Android 10 WifiNetworkSpecifier 버그 우회: 자동 연결 대신 수동 안내
-            updateStatus("와이파이 수동 연결 필요", "설정에서 '$ssid' 에 직접 연결한 후, [수동 연결]을 눌러주세요.", Color.parseColor("#F57C00"))
-            Toast.makeText(this, "와이파이 설정에서 직접 연결한 뒤 돌아와 주세요.", Toast.LENGTH_LONG).show()
-            
-            // 와이파이 설정 화면으로 이동
-            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
-            
-            // SSID와 비밀번호를 클립보드에 복사해두면 편리함 (선택사항)
-            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
-            cm.setPrimaryClip(android.content.ClipData.newPlainText("wifi", "SSID: $ssid\nPW: $pass"))
-            
-        } catch (t: Throwable) {
-            updateStatus("QR 오류", t.message ?: "해석 실패", Color.RED)
-        }
-    }
-
-    private fun connectToWifi(ssid: String, pass: String) {
-        try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                val specifier = WifiNetworkSpecifier.Builder().setSsid(ssid)
-                    .apply { if (pass.isNotEmpty()) setWpa2Passphrase(pass) }.build()
-                val request = NetworkRequest.Builder()
-                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI).setNetworkSpecifier(specifier).build()
-                val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-
-                AppLog.i("ui", "requestNetwork 시작 SSID=$ssid")
-
-                wifiCallback?.let {
-                    try {
-                        cm.unregisterNetworkCallback(it)
-                        AppLog.i("ui", "기존 NetworkCallback 해제")
-                    } catch (t: Throwable) {
-                        AppLog.e("ui", "기존 Callback 해제 실패", t)
-                    }
-                }
-
-                wifiCallback = object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(network: android.net.Network) {
-                        AppLog.i("ui", "onAvailable network=$network")
-                        AppLog.i("ui", "Capabilities=${cm.getNetworkCapabilities(network)}")
-                        AppLog.i("ui", "LinkProperties=${cm.getLinkProperties(network)}")
-
-                        runOnUiThread {
-                            pendingNetwork = network
-                            updateStatus("Wi-Fi 연결됨", "IP 확인 중...", Color.parseColor("#2E7D32"))
-                            statusDesc.postDelayed({
-                                if (isFinishing || isDestroyed) return@postDelayed // ★ Activity 파괴 확인
-                                val host = NetUtil.serverHostFromNetwork(this@MainActivity, network)
-                                hostEt.setText(host)
-                                AppLog.i("ui", "QR 자동 IP = $host")
-                                try {
-                                    val bound = cm.bindProcessToNetwork(network)
-                                    AppLog.i("ui", "MainActivity bindProcessToNetwork 결과=$bound network=$network")
-                                } catch (t: Throwable) {
-                                    AppLog.e("ui", "bindProcessToNetwork 예외", t)
-                                }
-                                updateStatus("VPN 연결 중...", "서버 $host", Color.parseColor("#F57C00"))
-                                requestVpnPermissionAndStart(host)
-                            }, 2500)
-                        }
-                    }
-                    override fun onUnavailable() {
-                        AppLog.e("ui", "onUnavailable: Wi-Fi 네트워크 요청 실패")
-                        runOnUiThread {
-                            updateStatus("Wi-Fi 실패", "수동 연결 필요", Color.RED)
-                        }
-                    }
-
-                    override fun onLost(network: android.net.Network) {
-                        AppLog.e("ui", "onLost network=$network")
-                        runOnUiThread {
-                            updateStatus("Wi-Fi 끊김", "네트워크가 해제되었습니다.", Color.RED)
-                        }
-                    }
-                }
-
-                try {
-                    cm.requestNetwork(request, wifiCallback!!)
-                    AppLog.i("ui", "requestNetwork 호출 완료")
-                } catch (t: Throwable) {
-                    AppLog.e("ui", "requestNetwork 호출 예외", t)
-                    updateStatus("Wi-Fi 요청 오류", t.message ?: "오류", Color.RED)
-                }
-            } else {
-                updateStatus("수동 연결", "설정에서 연결하세요", Color.parseColor("#F57C00"))
-                startActivity(Intent(Settings.ACTION_WIRELESS_SETTINGS))
-            }
-        } catch (t: Throwable) {
-            updateStatus("Wi-Fi 오류", t.message ?: "오류", Color.RED)
-        }
+            updateStatus("와이파이 수동 연결 필요", "설정에서 '$ssid' 연결 후 돌아와 UDP 또는 TCP를 누르세요.", Color.parseColor("#F57C00"))
+            Toast.makeText(this, "비밀번호가 클립보드에 복사되었습니다.", Toast.LENGTH_LONG).show()
+            val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager; cm.setPrimaryClip(android.content.ClipData.newPlainText("wifi", pass)); startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+        } catch (t: Throwable) { updateStatus("QR 오류", t.message ?: "해석 실패", Color.RED) }
     }
 
     private fun startServerMode() {
         if (ServerService.running) {
-            LocalHotspot.stop(); stopService(Intent(this, ServerService::class.java))
+            LocalHotspot.stop(); startService(Intent(this, ServerService::class.java).setAction("stop")); stopService(Intent(this, ServerService::class.java)); qrView.visibility = View.GONE
             updateStatus("대기 중", "서버 중지됨", Color.parseColor("#333333"))
         } else {
             updateStatus("서버 시작 중...", "핫스팟 활성화 중", Color.parseColor("#F57C00"))
             LocalHotspot.start(this, onStoppedUi = { runOnUiThread { refresh() } }) { ok ->
                 if (ok) {
-                    try {
-                        startForegroundService(Intent(this, ServerService::class.java))
-                        updateStatus("서버 실행 중", "SSID: ${LocalHotspot.ssid}\nPW: ${LocalHotspot.pass}", Color.parseColor("#1565C0"))
-                        showQr()
-                    } catch (t: Throwable) { updateStatus("오류", t.message ?: "실패", Color.RED) }
-                } else updateStatus("실패", "핫스팟 불가", Color.RED)
+                    try { val srvIntent = Intent(this, ServerService::class.java); if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(srvIntent) else startService(srvIntent); updateStatus("서버 실행 중", "SSID: ${LocalHotspot.ssid}\nPW: ${LocalHotspot.pass}", Color.parseColor("#1565C0")); showQr() } catch (t: Throwable) { updateStatus("오류", t.message ?: "실패", Color.RED) }
+                } else { updateStatus("실패", "핫스팟 불가 (기존 핫스팟이 켜져 있다면 끄고 시도)", Color.RED) }
+                refresh()
             }
         }
         refresh()
     }
-
-    private fun startClientMode() {
-        btnWg?.isEnabled = !isClientMode && !isWgMode
-        btnWgStop?.isEnabled = isWgMode
-        if (isWgMode) {
-            btnClient.isEnabled = false
-            btnDisconnect.isEnabled = false
-        } else if (!isClientMode) {
-            btnClient.isEnabled = true
-        }
-        if (isClientMode) {
-            stopClientSafely()
-        } else {
-            hostEt.visibility = View.VISIBLE
-            val host = hostEt.text.toString().trim()
-            if (host.isEmpty()) { Toast.makeText(this, "IP 입력 필요", Toast.LENGTH_SHORT).show(); return }
-            pendingNetwork = null
-            requestVpnPermissionAndStart(host)
-        }
-        refresh()
-    }
-
-    // ★ 안전한 클라이언트 종료
 
     private fun startWireGuard() {
         val conf = wgConfEt?.text?.toString()?.trim() ?: ""
-        if (conf.isEmpty() || !conf.contains("[Interface]") || !conf.contains("[Peer]")) {
-            Toast.makeText(this, "client.conf 전체를 붙여넣으세요", Toast.LENGTH_SHORT).show()
-            return
-        }
-        btnWg?.isEnabled = !isClientMode && !isWgMode
-        btnWgStop?.isEnabled = isWgMode
-        if (isWgMode) {
-            btnClient.isEnabled = false
-            btnDisconnect.isEnabled = false
-        } else if (!isClientMode) {
-            btnClient.isEnabled = true
-        }
-        if (isClientMode) {
-            Toast.makeText(this, "myinternet VPN을 먼저 끄세요", Toast.LENGTH_SHORT).show()
-            return
-        }
+        if (conf.isEmpty() || !conf.contains("[Interface]") || !conf.contains("[Peer]")) { Toast.makeText(this, "client.conf 전체를 붙여넣으세요", Toast.LENGTH_SHORT).show(); return }
+        if (VpnClientService.running) { Toast.makeText(this, "클라이언트 VPN을 먼저 끄세요", Toast.LENGTH_SHORT).show(); return }
         try {
-            NetUtil.saveWgConf(this, conf)
-            val f = java.io.File(filesDir, "wg.conf")
-            val prep = VpnService.prepare(this)
-            if (prep != null) {
-                pendingHost = "WG"
-                @Suppress("DEPRECATION")
-                startActivityForResult(prep, 101)
-            } else {
-                reallyStartWg(f.absolutePath)
-            }
-        } catch (t: Throwable) {
-            AppLog.e("ui", "WireGuard 시작 준비 실패", t)
-            Toast.makeText(this, "오류: ${t.message}", Toast.LENGTH_LONG).show()
-        }
+            NetUtil.saveWgConf(this, conf); val f = java.io.File(filesDir, "wg.conf"); val prep = VpnService.prepare(this)
+            if (prep != null) { pendingHost = "WG"; @Suppress("DEPRECATION") startActivityForResult(prep, 101) }
+            else { reallyStartWg(f.absolutePath) }
+        } catch (t: Throwable) { AppLog.e("ui", "WireGuard 시작 준비 실패", t); Toast.makeText(this, "오류: ${t.message}", Toast.LENGTH_LONG).show() }
     }
 
     private fun reallyStartWg(confPath: String) {
         try {
             val f = java.io.File(confPath)
-            if (!f.exists() || f.length() < 50) {
-                Toast.makeText(this, "conf 파일이 비어있습니다", Toast.LENGTH_LONG).show()
-                return
-            }
-            startService(Intent(this, WireGuardService::class.java)
-                .setAction("start")
-                .putExtra("confPath", confPath))
-            isWgMode = true
-            updateStatus("WireGuard 연결 중...", "핸드셰이크 대기", Color.parseColor("#F57C00"))
-            refresh()
-
-            // 3초 후 실제 연결 상태 확인
-            uiHandler.postDelayed({
-                if (WireGuardService.running) {
-                    updateStatus("WireGuard 연결됨", "client.conf 적용", Color.parseColor("#6A1B9A"))
-                } else {
-                    updateStatus("WireGuard 실패", "로그 확인 필요", Color.RED)
-                    isWgMode = false
-                }
-                refresh()
-            }, 3000)
-        } catch (t: Throwable) {
-            AppLog.e("ui", "WireGuard 서비스 시작 실패", t)
-            Toast.makeText(this, "서비스 시작 실패: ${t.message}", Toast.LENGTH_LONG).show()
-        }
+            if (!f.exists() || f.length() < 50) { Toast.makeText(this, "conf 파일이 비어있습니다", Toast.LENGTH_LONG).show(); return }
+            val wgIntent = Intent(this, WireGuardService::class.java).setAction("start").putExtra("confPath", confPath)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(wgIntent) else startService(wgIntent)
+            updateStatus("WireGuard 연결 중...", "핸드셰이크 대기", Color.parseColor("#F57C00")); refresh()
+            uiHandler.postDelayed({ if (WireGuardService.running) updateStatus("WireGuard 연결됨", "S24+ 외부 IP 변경 적용됨", Color.parseColor("#6A1B9A")) else updateStatus("WireGuard 실패", "로그 확인 필요", Color.RED); refresh() }, 3000)
+        } catch (t: Throwable) { AppLog.e("ui", "WireGuard 서비스 시작 실패", t); Toast.makeText(this, "서비스 시작 실패: ${t.message}", Toast.LENGTH_LONG).show() }
     }
 
     private fun stopWireGuard() {
-        try {
-            startService(Intent(this, WireGuardService::class.java).setAction("stop"))
-        } catch (_: Throwable) {}
-        isWgMode = false
-        updateStatus("대기 중", "WireGuard 해제됨", Color.parseColor("#333333"))
-        refresh()
+        try { startService(Intent(this, WireGuardService::class.java).setAction("stop")) } catch (_: Throwable) {}
+        updateStatus("대기 중", "WireGuard 해제됨", Color.parseColor("#333333")); uiHandler.postDelayed({ refresh() }, 500)
     }
 
-    private fun stopClientSafely() {
+    private fun stopClientSafely(silent: Boolean = false) {
         try {
-            startService(Intent(this, VpnClientService::class.java).setAction("stop"))
-
-            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager
-            try {
-                cm.bindProcessToNetwork(null)
-                AppLog.i("ui", "bindProcessToNetwork(null) 완료")
-            } catch (t: Throwable) { AppLog.e("ui", "바인딩 해제 실패", t) }
-
-            wifiCallback?.let {
-                try {
-                    cm.unregisterNetworkCallback(it)
-                    AppLog.i("ui", "NetworkCallback 해제 완료")
-                } catch (t: Throwable) { AppLog.e("ui", "Callback 해제 실패", t) }
-            }
-            wifiCallback = null
-            pendingNetwork = null
-
-            // Note20 네트워크 초기화 대응: Wi-Fi 재활성화 유도
-            try {
-                val wm = getSystemService(WIFI_SERVICE) as WifiManager
-                @Suppress("DEPRECATION")
-                if (!wm.isWifiEnabled) wm.isWifiEnabled = true
-            } catch (_: Throwable) {}
-
-            isClientMode = false
-            updateStatus("대기 중", "VPN 연결 해제됨\n다른 Wi-Fi는 설정에서 선택하세요", Color.parseColor("#455A64"))
-            refresh()
-            Toast.makeText(this, "VPN 해제 완료. 다른 Wi-Fi는 설정에서 선택하세요.", Toast.LENGTH_LONG).show()
-        } catch (t: Throwable) {
-            AppLog.e("ui", "종료 중 오류", t)
-        }
+            isConnecting = false; uiHandler.removeCallbacks(timeoutRunnable)
+            val stopIntent = Intent(this, VpnClientService::class.java).setAction("stop"); startService(stopIntent); stopService(Intent(this, VpnClientService::class.java))
+            val cm = getSystemService(CONNECTIVITY_SERVICE) as ConnectivityManager; try { cm.bindProcessToNetwork(null) } catch (_: Throwable) {}
+            wifiCallback?.let { try { cm.unregisterNetworkCallback(it) } catch (_: Throwable) {} }; wifiCallback = null; pendingNetwork = null
+            getSharedPreferences("ui_state", MODE_PRIVATE).edit().putBoolean("is_client", false).apply(); lastTx = 0L; lastRx = 0L
+            if (!silent) { updateStatus("대기 중", "VPN 연결이 완전히 해제되었습니다.", Color.parseColor("#455A64")); Toast.makeText(this, "연결 해제 완료", Toast.LENGTH_SHORT).show() }
+            uiHandler.postDelayed({ refresh() }, 350)
+        } catch (t: Throwable) { AppLog.e("ui", "종료 중 오류", t) }
     }
 
     private fun requestVpnPermissionAndStart(host: String) {
         if (isConnecting) return
         isConnecting = true
-        
-        // ★ Android 10 무한 대기 방지: 15초 후 자동으로 상태 초기화
-        uiHandler.postDelayed({
-            if (isConnecting) {
-                isConnecting = false
-                updateStatus("연결 시간 초과", "다시 시도해 주세요", Color.RED)
-                refresh() // 버튼 다시 활성화
-            }
-        }, 15000)
-
+        updateStatus("연결 준비 중...", "${selectedMode.uppercase()} 모드로 연결 시도", Color.parseColor("#F57C00")); refresh()
+        uiHandler.removeCallbacks(timeoutRunnable); uiHandler.postDelayed(timeoutRunnable, 15000)
         val prep = VpnService.prepare(this)
-        if (prep != null) { pendingHost = host; @Suppress("DEPRECATION") startActivityForResult(prep, 100) }
-        else startVpn(host)
+        if (prep != null) { pendingHost = host; @Suppress("DEPRECATION") startActivityForResult(prep, 100) } else { startVpn(host) }
     }
 
     private fun startVpn(host: String) {
         try {
-            val intent = Intent(this, VpnClientService::class.java).putExtra("host", host)
+            isConnecting = false; uiHandler.removeCallbacks(timeoutRunnable)
+            val intent = Intent(this, VpnClientService::class.java).putExtra("host", host).putExtra("mode", selectedMode)
             pendingNetwork?.let { intent.putExtra("network", it) }
-            startService(intent)
-            isClientMode = true
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
             getSharedPreferences("ui_state", MODE_PRIVATE).edit().putBoolean("is_client", true).apply()
             lastTx = 0; lastRx = 0
-            updateStatus("클라이언트 연결됨", "서버 $host", Color.parseColor("#2E7D32"))
-            refresh()
-        } catch (t: Throwable) { updateStatus("오류", t.message ?: "VPN 실패", Color.RED) }
+            val modeText = if (selectedMode == "tcp") "TCP 모드 (쇼핑/웹용)" else "UDP 모드 (게임용)"
+            updateStatus("클라이언트 연결됨", "서버 $host | $modeText", Color.parseColor("#2E7D32")); uiHandler.postDelayed({ refresh() }, 400)
+        } catch (t: Throwable) { isConnecting = false; AppLog.e("ui", "startVpn 실패", t); updateStatus("연결 오류", t.message ?: "VPN 시작 실패", Color.RED); refresh() }
     }
 
     private fun updateStatus(title: String, desc: String, color: Int) {
-        val icon = when {
-            title.contains("연결됨") || title.contains("실행 중") -> "●"
-            title.contains("중") -> "◐"
-            title.contains("실패") || title.contains("오류") || title.contains("거부") -> "✕"
-            else -> "○"
-        }
-        statusTitle.text = "$icon $title"
-        statusTitle.setTextColor(color)
-        statusDesc.text = desc
+        val icon = when { title.contains("연결됨") || title.contains("실행 중") -> "●"; title.contains("중") -> "◐"; title.contains("실패") || title.contains("오류") || title.contains("거부") || title.contains("초과") -> "✕"; else -> "○" }
+        statusTitle.text = "$icon $title"; statusTitle.setTextColor(color); statusDesc.text = desc
     }
 
     private fun showQr() {
         if (LocalHotspot.ssid.isEmpty()) { qrView.visibility = View.GONE; return }
         val key = "${LocalHotspot.ssid}|${LocalHotspot.pass}|${LocalHotspot.sec}"
-        if (key != lastQr) {
-            try { qrView.setImageBitmap(QrHelper.wifi(LocalHotspot.ssid, LocalHotspot.pass, LocalHotspot.sec)); lastQr = key } catch (_: Throwable) {}
-        }
+        if (key != lastQr) { try { qrView.setImageBitmap(QrHelper.wifi(LocalHotspot.ssid, LocalHotspot.pass, LocalHotspot.sec)); lastQr = key } catch (_: Throwable) {} }
         qrView.visibility = View.VISIBLE
     }
 
@@ -616,157 +296,48 @@ class MainActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         val result: IntentResult? = IntentIntegrator.parseActivityResult(requestCode, resultCode, data)
         if (result != null) {
-            if (result.contents == null) {
-                updateStatus("스캔 취소", "QR 스캔이 취소되었습니다.", Color.GRAY)
-            } else {
-                handleWifiQr(result.contents)
-            }
+            if (result.contents == null) updateStatus("스캔 취소", "QR 스캔이 취소되었습니다.", Color.GRAY) else handleWifiQr(result.contents)
         } else if (requestCode == 102) {
             if (resultCode == Activity.RESULT_OK && data?.data != null) {
-                try {
-                    val text = contentResolver.openInputStream(data.data!!)?.bufferedReader()?.use { it.readText() } ?: ""
-                    if (text.isNotBlank()) {
-                        wgConfEt?.setText(text)
-                        NetUtil.saveWgConf(this, text)
-                        Toast.makeText(this, "client.conf 로드 (" + text.length + "자)", Toast.LENGTH_SHORT).show()
-                        AppLog.i("ui", "conf 파일 로드 " + text.length + "자")
-                    } else {
-                        Toast.makeText(this, "파일이 비어있음", Toast.LENGTH_SHORT).show()
-                    }
-                } catch (t: Throwable) {
-                    AppLog.e("ui", "conf 읽기 실패", t)
-                    Toast.makeText(this, "읽기 실패: " + t.message, Toast.LENGTH_LONG).show()
-                }
-            } else {
-                Toast.makeText(this, "파일 선택 취소", Toast.LENGTH_SHORT).show()
+                try { val text = contentResolver.openInputStream(data.data!!)?.bufferedReader()?.use { it.readText() } ?: ""; if (text.isNotBlank()) { wgConfEt?.setText(text); NetUtil.saveWgConf(this, text); Toast.makeText(this, "client.conf 로드 (" + text.length + "자)", Toast.LENGTH_SHORT).show() } } catch (t: Throwable) { Toast.makeText(this, "읽기 실패: " + t.message, Toast.LENGTH_LONG).show() }
             }
         } else if (requestCode == 101) {
-            if (resultCode == Activity.RESULT_OK) {
-                val f = java.io.File(filesDir, "wg.conf")
-                reallyStartWg(f.absolutePath)
-            } else updateStatus("권한 거부", "WireGuard VPN 권한 필요", Color.RED)
+            if (resultCode == Activity.RESULT_OK) { val f = java.io.File(filesDir, "wg.conf"); reallyStartWg(f.absolutePath) } else updateStatus("권한 거부", "WireGuard VPN 권한 필요", Color.RED)
         } else if (requestCode == 999) {
-            // ★ 앱 시작 시 VPN 승인 결과
-            if (resultCode == Activity.RESULT_OK) {
-                AppLog.i("ui", "VPN 권한 사전 승인 완료")
-            }
+            if (resultCode == Activity.RESULT_OK) AppLog.i("ui", "VPN 권한 사전 승인 완료")
         } else if (requestCode == 100) {
-            isConnecting = false // ★ 락 해제
-            uiHandler.removeCallbacksAndMessages(null) // 타임아웃 취소
-            if (resultCode == Activity.RESULT_OK) startVpn(pendingHost)
-            else updateStatus("권한 거부", "VPN 필요", Color.RED)
-        } else {
-            super.onActivityResult(requestCode, resultCode, data)
-        }
+            isConnecting = false; uiHandler.removeCallbacks(timeoutRunnable)
+            if (resultCode == Activity.RESULT_OK) startVpn(pendingHost) else { updateStatus("권한 거부", "VPN 권한 승인이 필요합니다", Color.RED); refresh() }
+        } else { super.onActivityResult(requestCode, resultCode, data) }
     }
 
     private fun runTest(host: String) {
-        if (host.isEmpty()) {
-            Toast.makeText(this, "IP를 입력하세요", Toast.LENGTH_SHORT).show()
-            return
-        }
+        if (host.isEmpty()) { Toast.makeText(this, "IP를 입력하세요", Toast.LENGTH_SHORT).show(); return }
         Toast.makeText(this, "테스트 중...", Toast.LENGTH_SHORT).show()
         Thread {
             try {
                 val tcpResult = Socks5Test.tcp(this, host, ServerService.PORT)
                 val udpResult = Socks5Test.udp(this, host, ServerService.PORT)
                 val msg = "대상: $host\nTCP: $tcpResult\nUDP: $udpResult"
-                runOnUiThread { 
-                    if (!isFinishing && !isDestroyed) {
-                        AlertDialog.Builder(this).setTitle("결과").setMessage(msg).setPositiveButton("확인", null).show() 
-                    }
-                }
-            } catch (e: Throwable) {
-                AppLog.e("ui", "테스트 중 크래시 방어", e)
-                runOnUiThread {
-                    if (!isFinishing && !isDestroyed) {
-                        AlertDialog.Builder(this).setTitle("테스트 실패").setMessage("예외 발생: ${e.message}").setPositiveButton("확인", null).show()
-                    }
-                }
-            }
+                runOnUiThread { if (!isFinishing && !isDestroyed) AlertDialog.Builder(this).setTitle("결과").setMessage(msg).setPositiveButton("확인", null).show() }
+            } catch (e: Throwable) { runOnUiThread { if (!isFinishing && !isDestroyed) AlertDialog.Builder(this).setTitle("테스트 실패").setMessage("예외 발생: ${e.message}").setPositiveButton("확인", null).show() } }
         }.start()
     }
 
     private fun refresh() {
-        if (ServerService.running) {
-            btnServer.text = "서버 중지"; btnServer.setBackgroundColor(Color.parseColor("#C62828"))
-        } else {
-            btnServer.text = "서버 시작\n(데이터 폰)"; btnServer.setBackgroundColor(Color.parseColor("#1565C0"))
-        }
-        btnWg?.isEnabled = !isClientMode && !isWgMode
-        btnWgStop?.isEnabled = isWgMode
-        if (isWgMode) {
-            btnClient.isEnabled = false
-            btnDisconnect.isEnabled = false
-        } else if (!isClientMode) {
-            btnClient.isEnabled = true
-        }
-        if (isClientMode) {
-            btnClient.text = "수동 연결\n(연결됨)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
-            btnClient.isEnabled = false // 이미 연결됐으니 비활성화
-            btnDisconnect.isEnabled = true // 해제 버튼 활성화
-        } else {
-            btnClient.text = "수동 연결\n(IP 입력)"; btnClient.setBackgroundColor(Color.parseColor("#2E7D32"))
-            btnClient.isEnabled = true
-            btnDisconnect.isEnabled = false // 연결 안 됐을 때 해제 버튼 비활성화
-        }
+        val vpnOn = VpnClientService.running; val wgOn = WireGuardService.running; val srvOn = ServerService.running; val activeMode = VpnClientService.currentActiveMode
+        if (srvOn) { btnServer.text = "서버 중지 (실행 중)"; btnServer.setBackgroundColor(Color.parseColor("#C62828")) } else { btnServer.text = "서버 시작 (데이터 폰 / S24+)"; btnServer.setBackgroundColor(Color.parseColor("#1565C0")) }
+        btnWg?.isEnabled = !vpnOn && !wgOn; btnWgStop?.isEnabled = wgOn; btnClientUdp.isEnabled = !wgOn && !isConnecting; btnClientTcp.isEnabled = !wgOn && !isConnecting; btnDisconnect.isEnabled = vpnOn || isConnecting
+        if (vpnOn) {
+            if (activeMode == "tcp") { btnClientUdp.text = "🎮 UDP로 전환\n(게임용)"; btnClientUdp.setBackgroundColor(Color.parseColor("#546E7A")); btnClientTcp.text = "● TCP 연결됨\n(쇼핑/웹)"; btnClientTcp.setBackgroundColor(Color.parseColor("#00838F")) }
+            else { btnClientUdp.text = "● UDP 연결됨\n(게임)"; btnClientUdp.setBackgroundColor(Color.parseColor("#2E7D32")); btnClientTcp.text = "🛒 TCP로 전환\n(롯데·H몰·웹)"; btnClientTcp.setBackgroundColor(Color.parseColor("#546E7A")) }
+        } else { btnClientUdp.text = "🎮 UDP 연결\n(게임용)"; btnClientUdp.setBackgroundColor(Color.parseColor("#2E7D32")); btnClientTcp.text = "🛒 TCP 연결\n(롯데·H몰·웹용)"; btnClientTcp.setBackgroundColor(Color.parseColor("#00838F")) }
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        uiHandler.removeCallbacksAndMessages(null)
-        btnWg?.isEnabled = !isClientMode && !isWgMode
-        btnWgStop?.isEnabled = isWgMode
-        if (isWgMode) {
-            btnClient.isEnabled = false
-            btnDisconnect.isEnabled = false
-        } else if (!isClientMode) {
-            btnClient.isEnabled = true
-        }
-        if (isClientMode) {
-            stopClientSafely()
-        }
-    }
+    override fun onDestroy() { super.onDestroy(); uiHandler.removeCallbacksAndMessages(null) }
 
-    // ★ 안드로이드 시스템 VPN 설정으로 이동하는 우회 함수
     private fun fallbackToSystemVpnSettings() {
-        updateStatus("설정 필요", "시스템 설정에서 MyInternet을 직접 켜주세요", Color.RED)
-        Toast.makeText(this, "설정 화면에서 'MyInternet'을 찾아 직접 연결하세요.", Toast.LENGTH_LONG).show()
-        try {
-            startActivity(Intent(Settings.ACTION_VPN_SETTINGS))
-        } catch (_: Throwable) {
-            startActivity(Intent(Settings.ACTION_SETTINGS))
-        }
-    }
-
-    // ★ UDP/TCP 모드 선택 다이얼로그
-    private fun showModeSelectionDialog() {
-        val modes = arrayOf("🎮 UDP 모드 (게임용)", "🛒 TCP 모드 (웹/쇼핑 앱용)")
-        AlertDialog.Builder(this)
-            .setTitle("VPN 연결 모드 선택")
-            .setItems(modes) { _, which ->
-                val mode = if (which == 0) "udp" else "tcp"
-                startClientWithMode(mode)
-            }
-            .setNegativeButton("취소", null)
-            .show()
-    }
-    
-    // ★ 선택된 모드로 VPN 연결 시작
-    private fun startClientWithMode(mode: String) {
-        if (isClientMode) {
-            stopClientSafely()
-            statusDesc.postDelayed({ startClientWithMode(mode) }, 800)
-            return
-        }
-        hostEt.visibility = View.VISIBLE
-        val host = hostEt.text.toString().trim()
-        if (host.isEmpty()) {
-            Toast.makeText(this, "서버 IP를 입력하세요", Toast.LENGTH_SHORT).show()
-            return
-        }
-        currentMode = mode
-        updateStatus("연결 중...", "$mode 모드로 연결", Color.parseColor("#F57C00"))
-        requestVpnPermissionAndStart(host)
+        Toast.makeText(this, "시스템 VPN 설정 화면으로 이동합니다.", Toast.LENGTH_SHORT).show()
+        try { startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) } catch (_: Throwable) { startActivity(Intent(Settings.ACTION_SETTINGS)) }
     }
 }
