@@ -17,6 +17,14 @@ class ServerService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (intent?.action == "stop") {
+            stopServerInternal()
+            if (Build.VERSION.SDK_INT >= 24) stopForeground(STOP_FOREGROUND_REMOVE)
+            else @Suppress("DEPRECATION") stopForeground(true)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         AppLog.i("srv", "ServerService onStartCommand")
         try {
             val nm = getSystemService(NotificationManager::class.java)
@@ -25,8 +33,9 @@ class ServerService : Service() {
             )
             val n = Notification.Builder(this, "srv")
                 .setContentTitle("MyInternet 서버 실행 중")
-                .setContentText("SOCKS5 포트 $PORT")
+                .setContentText("SOCKS5 포트 $PORT (백그라운드 유지)")
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setOngoing(true)
                 .build()
             if (Build.VERSION.SDK_INT >= 29) {
                 startForeground(1, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
@@ -41,7 +50,6 @@ class ServerService : Service() {
             if (server == null) {
                 server = Socks5Server(PORT).also { it.start() }
                 running = true
-                // ★ Socks5Server의 카운터를 ServerService에서 접근 가능하도록 캐싱
                 serverInstance = server
             }
         } catch (t: Throwable) {
@@ -53,29 +61,38 @@ class ServerService : Service() {
         return START_STICKY
     }
 
-    override fun onDestroy() {
-        AppLog.i("srv", "ServerService onDestroy")
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        AppLog.i("srv", "onTaskRemoved - 서버 백그라운드 유지")
+        if (running) {
+            val restartIntent = Intent(applicationContext, ServerService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(restartIntent)
+            } else {
+                startService(restartIntent)
+            }
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
+    private fun stopServerInternal() {
         server?.stop()
         server = null
         serverInstance = null
         running = false
         try { wl?.release() } catch (_: Exception) {}
         wl = null
+    }
+
+    override fun onDestroy() {
+        AppLog.i("srv", "ServerService onDestroy")
+        stopServerInternal()
         super.onDestroy()
     }
 
     companion object {
         const val PORT = 1080
-
-        @Volatile
-        var running = false
-
-        // ★ MainActivity에서 접속자 수를 읽기 위한 인스턴스 참조
-        @Volatile
-        var serverInstance: Socks5Server? = null
-
-        // ★ 실시간 접속자 수 반환
-        val activeClientCount: Int
-            get() = serverInstance?.activeConnections?.get() ?: 0
+        @Volatile var running = false
+        @Volatile var serverInstance: Socks5Server? = null
+        val activeClientCount: Int get() = serverInstance?.activeConnections?.get() ?: 0
     }
 }

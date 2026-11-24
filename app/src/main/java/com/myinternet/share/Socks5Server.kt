@@ -12,14 +12,13 @@ import kotlin.concurrent.thread
 class Socks5Server(private val port: Int) {
     private var server: ServerSocket? = null
     private val pool = Executors.newCachedThreadPool()
-    private val connectionLimit = java.util.concurrent.Semaphore(200)
-    private val activeSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>() // ★ 활성 소켓 추적
+    private val connectionLimit = java.util.concurrent.Semaphore(300)
+    private val activeSockets = java.util.concurrent.ConcurrentHashMap.newKeySet<Socket>()
     @Volatile private var running = false
     val activeConnections = AtomicInteger(0)
 
-    // ★ 버그 수정 1: DNS 캐시 크기 제한 (최대 1000개 유지)
-    private val dnsCache = object : LinkedHashMap<String, InetAddress>(100, 0.75f, true) {
-        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, InetAddress>?): Boolean {
+    private val dnsCache = object : LinkedHashMap<String, List<InetAddress>>(200, 0.75f, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, List<InetAddress>>?): Boolean {
             return size > 1000
         }
     }
@@ -48,7 +47,6 @@ class Socks5Server(private val port: Int) {
         running = false
         try { server?.close() } catch (_: Exception) {}
         server = null
-        // ★ 모든 활성 소켓 강제 종료 (좀비 스레드 방지)
         try {
             for (s in activeSockets) {
                 try { s.close() } catch (_: Exception) {}
@@ -59,16 +57,16 @@ class Socks5Server(private val port: Int) {
 
     private fun handle(c: Socket) {
         if (!connectionLimit.tryAcquire()) {
-            AppLog.e("srv", "연결 거부: 최대 접속자 수(200) 초과")
+            AppLog.e("srv", "연결 거부: 최대 접속자 수 초과")
             try { c.close() } catch (_: Exception) {}
             return
         }
         activeConnections.incrementAndGet()
-        activeSockets.add(c) // ★ 추적
+        activeSockets.add(c)
         try {
             c.tcpNoDelay = true
-            // ★ DoS 방어: 10초 내에 데이터를 안 보내면 연결 강제 종료
-            c.soTimeout = 10000 
+            c.keepAlive = true
+            c.soTimeout = 10000
 
             val i = DataInputStream(c.getInputStream())
             val o = c.getOutputStream()
@@ -90,9 +88,8 @@ class Socks5Server(private val port: Int) {
                 else -> return
             }
             val dport = i.readUnsignedShort()
-            
-            // 핸드셰이크 완료 후에는 타임아웃 해제
-            c.soTimeout = 0 
+
+            c.soTimeout = 0
 
             when (cmd) {
                 1 -> tcpConnect(c, i, o, host, dport)
@@ -100,10 +97,12 @@ class Socks5Server(private val port: Int) {
                 else -> reply(o, 7)
             }
         } catch (e: Exception) {
-            AppLog.e("srv", "세션 예외 ${e.javaClass.simpleName} ${e.message}")
+            if (e !is java.io.EOFException && e !is SocketException) {
+                AppLog.e("srv", "세션 예외 ${e.javaClass.simpleName} ${e.message}")
+            }
         } finally {
             activeConnections.decrementAndGet()
-            activeSockets.remove(c) // ★ 추적 해제
+            activeSockets.remove(c)
             try { c.close() } catch (_: Exception) {}
             connectionLimit.release()
         }
@@ -114,37 +113,53 @@ class Socks5Server(private val port: Int) {
         o.flush()
     }
 
-    private fun resolve(host: String): List<InetAddress> =
-        InetAddress.getAllByName(host).sortedBy { if (it is Inet4Address) 0 else 1 }
+    private fun resolve(host: String): List<InetAddress> {
+        synchronized(dnsCache) {
+            dnsCache[host]?.let { return it }
+        }
+        val list = InetAddress.getAllByName(host).sortedBy { if (it is Inet4Address) 0 else 1 }
+        if (list.isNotEmpty()) {
+            synchronized(dnsCache) { dnsCache[host] = list }
+        }
+        return list
+    }
 
     private fun tcpConnect(c: Socket, i: InputStream, o: OutputStream, host: String, dport: Int) {
         if (host.startsWith("198.18.")) { reply(o, 5); return }
         var r: Socket? = null
         var err: Exception? = null
-        val startTime = System.currentTimeMillis() // ★ 전체 타임아웃 추적
+        val startTime = System.currentTimeMillis()
         try {
-            for (a in resolve(host).take(3)) {
+            val addrs = resolve(host)
+            val v4Only = addrs.filterIsInstance<Inet4Address>()
+            val targets = if (v4Only.isNotEmpty()) v4Only.take(3) else addrs.take(3)
+
+            for (a in targets) {
                 if (System.currentTimeMillis() - startTime > 15000) {
                     err = Exception("전체 타임아웃 15초 초과")
                     break
                 }
                 val s = Socket()
                 try {
-                    s.connect(InetSocketAddress(a, dport), if (a is Inet4Address) 7000 else 3000)
-                    r = s; break
+                    s.tcpNoDelay = true
+                    s.keepAlive = true
+                    s.connect(InetSocketAddress(a, dport), 6000)
+                    r = s
+                    break
                 } catch (e: Exception) {
                     err = e
                     try { s.close() } catch (_: Exception) {}
                 }
             }
         } catch (e: Exception) { err = e }
-        
+
         val rs = r
         if (rs == null) {
             AppLog.e("srv", "CONNECT 실패 $host:$dport ${err?.javaClass?.simpleName}")
-            reply(o, 5); return
+            reply(o, 5)
+            return
         }
-        rs.tcpNoDelay = true
+        activeSockets.add(rs)
         reply(o, 0)
         val t = thread(isDaemon = true) {
             try { rs.getInputStream().copyTo(o, 65536) } catch (_: Exception) {}
@@ -153,12 +168,12 @@ class Socks5Server(private val port: Int) {
         try { i.copyTo(rs.getOutputStream(), 65536) } catch (_: Exception) {}
         try { rs.shutdownOutput() } catch (_: Exception) {}
         t.join(3000)
+        activeSockets.remove(rs)
         try { rs.close() } catch (_: Exception) {}
     }
 
     private fun udpAssociate(c: Socket, i: InputStream, o: OutputStream) {
         val us = DatagramSocket(0)
-        // ★ 버그 수정 2: 60초 동안 패킷이 없으면 소켓을 자동으로 닫아 좀비 소켓 방지
         try { us.soTimeout = 60000 } catch (_: Exception) {}
 
         val bnd = if (c.localAddress is Inet4Address) ByteArray(4) else ByteArray(16)
@@ -185,11 +200,10 @@ class Socks5Server(private val port: Int) {
                         us.receive(p)
                         lastActive = System.currentTimeMillis()
                     } catch (e: SocketTimeoutException) {
-                        // 60초 동안 패킷이 없으면 루프 종료 및 소켓 회수
                         if (System.currentTimeMillis() - lastActive > 60000) break
                         continue
                     }
-                    
+
                     val len = p.length
                     if (p.address == clientAddr && (clientPort == -1 || p.port == clientPort)) {
                         clientPort = p.port
@@ -203,9 +217,7 @@ class Socks5Server(private val port: Int) {
                                 val l = buf[idx++].toInt() and 255
                                 val h = String(buf, idx, l)
                                 idx += l
-                                try {
-                                    synchronized(dnsCache) { dnsCache.getOrPut(h) { resolve(h).first() } }
-                                } catch (e: Exception) { continue }
+                                try { resolve(h).first() } catch (e: Exception) { continue }
                             }
                             else -> continue
                         }
@@ -216,10 +228,6 @@ class Socks5Server(private val port: Int) {
                         sp.port = dp
                         us.send(sp)
                     } else if (clientPort != -1) {
-                        // ★ 발신지 검증: 예상하지 못한 IP에서 온 패킷은 무시 (보안 강화)
-                        if (p.address.isLoopbackAddress || p.address.isSiteLocalAddress) {
-                            // 내부 DNS 응답 등은 허용 (계속 진행)
-                        }
                         val a = p.address.address
                         val hl = 4 + a.size + 2
                         val st = hdr - hl
@@ -239,7 +247,7 @@ class Socks5Server(private val port: Int) {
                 try { us.close() } catch (_: Exception) {}
             }
         }
-
         try { while (i.read() >= 0) { } } catch (_: Exception) {}
+        try { us.close() } catch (_: Exception) {}
     }
 }
