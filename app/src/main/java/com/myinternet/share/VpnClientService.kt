@@ -113,7 +113,7 @@ class VpnClientService : VpnService() {
                     val a = la.address
                     if (a is Inet4Address) {
                         val b = a.address
-                        return "${b.toInt() and 255}.${b.toInt() and 255}.${b.toInt() and 255}.1"
+                        return "${b[0].toInt() and 255}.${b[1].toInt() and 255}.${b[2].toInt() and 255}.1"
                     }
                 }
             }
