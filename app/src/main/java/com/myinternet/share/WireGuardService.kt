@@ -5,6 +5,7 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.IBinder
@@ -52,7 +53,12 @@ class WireGuardService : Service() {
             .setContentText("외부 IP 우회 터널 유지 중")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true).build()
-        startForeground(3, n)
+        if (Build.VERSION.SDK_INT >= 29) {
+            // ★ Android 14+ 필수: FGS 타입 명시
+            startForeground(3, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else {
+            startForeground(3, n)
+        }
     }
 
     override fun onTaskRemoved(rootIntent: Intent?) {
