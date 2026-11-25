@@ -43,25 +43,27 @@ class WireGuardService : Service() {
     }
 
     private fun promoteForeground() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            getSystemService(NotificationManager::class.java).createNotificationChannel(
-                NotificationChannel("wg_channel", "WireGuard 상태", NotificationManager.IMPORTANCE_LOW)
-            )
-        }
-        val n = Notification.Builder(this, "wg_channel")
-            .setContentTitle("MyInternet WireGuard 실행 중")
-            .setContentText("외부 IP 우회 터널 유지 중")
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
-            .setOngoing(true).build()
-        if (Build.VERSION.SDK_INT >= 29) {
-            // ★ Android 14+ 필수: FGS 타입 명시
-            startForeground(3, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val nm = getSystemService(NotificationManager::class.java)
+                nm.createNotificationChannel(
+                    NotificationChannel("wg_channel", "WireGuard 상태", NotificationManager.IMPORTANCE_LOW)
+                )
+            }
+            val n = Notification.Builder(this, "wg_channel")
+                .setContentTitle("MyInternet WireGuard 실행 중")
+                .setContentText("외부 IP 우회 터널 유지 중")
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setOngoing(true)
+                .build()
             if (Build.VERSION.SDK_INT >= 29) {
-            startForeground(3, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
-        } else {
-            startForeground(3, n)
-        }
+                startForeground(3, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+            } else {
+                startForeground(3, n)
+            }
+            AppLog.i("wg", "promoteForeground 완료")
+        } catch (t: Throwable) {
+            AppLog.e("wg", "promoteForeground 실패", t)
         }
     }
 
