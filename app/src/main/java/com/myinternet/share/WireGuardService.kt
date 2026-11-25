@@ -57,7 +57,11 @@ class WireGuardService : Service() {
             // ★ Android 14+ 필수: FGS 타입 명시
             startForeground(3, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
         } else {
+            if (Build.VERSION.SDK_INT >= 29) {
+            startForeground(3, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE)
+        } else {
             startForeground(3, n)
+        }
         }
     }
 
